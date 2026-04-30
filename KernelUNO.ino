@@ -65,10 +65,12 @@ unsigned long lastActivity = 0;
 
 void hashPass(const char* input, char* output) {
   uint8_t key = 0xA5;
+  memset(output, 0, 10); 
   for (int i = 0; i < 9; i++) {
-    if (input[i] == '\0') { output[i] = '\0'; break; }
+    if (input[i] == '\0') break;
     output[i] = (input[i] ^ key) + (i * 2);
   }
+  output[9] = '\0';
 }
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -253,6 +255,12 @@ void setup() {
     addDmesg(F("Security Setup Required"));
   }
 
+  if (WiFi.status() == WL_CONNECTED) {
+    addDmesg(F("WiFi Connected Successfully"));
+    Serial.print(F("IP: ")); Serial.println(WiFi.localIP());
+  } else {
+    addDmesg(F("WiFi Not Connected (Auto)"));
+  }
   telnetServer.begin(); 
   addDmesg(F("Secure Boot Complete"));
 #endif
@@ -797,8 +805,10 @@ void executeCommand(char* line) {
     }
   }
   else if (strcmp_P(cmd, PSTR("ps")) == 0) {
-    Serial.print(F("Tasks: 1 (shell)\nCPU: 80MHz\nFree Heap: "));
-    Serial.println(freeMemory());
+    kprintln(F("PID  NAME      STATUS"));
+    kprintln(F("0    kernel    RUNNING"));
+    kprintln(F("1    shell     ACTIVE"));
+    kprint(F("Free Heap: ")); kprintln(freeMemory());
   }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   else if (strcmp_P(cmd, PSTR("ping")) == 0) {
