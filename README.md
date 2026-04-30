@@ -1,47 +1,31 @@
-# KernelUNO v1.0 - a Ram filesystem emulator and simple shell for your arduino UNO R3 
+# KernelUNO Pro OS Edition 🚀
 
-# Features
+**KernelUNO** is a lightweight, ultra-efficient embedded operating system designed for Arduino UNO and ESP8266/ESP32 platforms. It provides a Unix-like shell environment, a virtual filesystem, and advanced networking capabilities within a 2KB RAM constraint.
 
-- Unix-like Shell with 24 commands
+## 🌟 Key Features
+- **NetShell (Telnet)**: Remote access over WiFi (Port 23) - The embedded "SSH" alternative.
+- **Pro Security**: Integrated Login system with encrypted password storage in EEPROM.
+- **Advanced Networking**:
+  - `wifi connect/scan/status/auto`: Manage connectivity.
+  - `ping`: Check internet reachability.
+  - `wget`: Download files directly from the web into the RAM filesystem.
+  - `ifconfig`: Full network interface information.
+- **Unix-like VFS**: Virtual Filesystem with `/home`, `/dev`, `/sys`, and `/bin`.
+- **System Monitoring**: `ps` (Task manager), `free` (RAM monitor), `df` (Disk usage).
+- **Automation**: `sh` command to execute batch scripts stored in memory.
 
-- GPIO support
+## 🛠️ Getting Started
+1. Upload the `KernelUNO.ino` to your ESP8266 or Arduino.
+2. Open Serial Monitor (115200 baud).
+3. Type `login admin` to unlock the system.
+4. Use `wifi connect SSID PASS` to go online.
+5. Use `ifconfig` to get your IP, then connect via PuTTY (Telnet port 23) for remote control.
 
-<img width="769" height="634" alt="1" src="https://github.com/user-attachments/assets/5d9940bc-8b05-48c4-92f6-c0d2b9dccbed" />
+## 📂 Command Reference
+- **Files**: `ls`, `cd`, `pwd`, `mkdir`, `touch`, `cat`, `echo`, `rm`, `save`, `load`
+- **Network**: `wifi`, `ping`, `wget`, `ifconfig`
+- **Hardware**: `gpio`, `pwm`, `i2c scan`, `read`, `write`
+- **System**: `uname`, `uptime`, `date`, `ps`, `dmesg`, `clear`, `reboot`
 
-
-# Commands
-- `uname`
-- `cd`
-- `ls`
-- `pwd`
-- `mkdir`
-- `touch`
-- `cat`
-- `echo`
-- `rm`
-- `info`
-- `pinmode`
-- `write`
-- `read`
-- `gpio`
-- `sh`
-- `uptime`
-- `dmesg`
-- `df`
-- `free`
-- `whoami`
-- `clear`
-- `reboot`
-- `pwm`
-
-# TODO
-
-- [ ] eeprom
-- [ ] i2c
-- [ ] pwm (done)
-- [ ] date cmd
-
-# LICENSE
-
-BSD3 ([Arc1011](https://github.com/Arc1011/KernelUNO))
-
+---
+*Optimized for extreme memory efficiency and performance.*
