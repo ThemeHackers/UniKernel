@@ -54,9 +54,22 @@ int dmesgIndex = 0;
 int shellDepth = 0;
 bool authenticated = false; 
 uint8_t loginFailCount = 0; 
+bool isLockedOut = false;
+bool needsSetup = false;
+bool telnetEnabled = false;
 unsigned long lastActivity = 0; 
 #define MAX_SHELL_DEPTH 3
 #define SESSION_TIMEOUT 300000 
+#define MAX_FAIL_COUNT 5
+
+
+void hashPass(const char* input, char* output) {
+  uint8_t key = 0xA5;
+  for (int i = 0; i < 9; i++) {
+    if (input[i] == '\0') { output[i] = '\0'; break; }
+    output[i] = (input[i] ^ key) + (i * 2);
+  }
+}
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
 WiFiServer telnetServer(23);
@@ -231,9 +244,17 @@ void setup() {
   ESP.wdtEnable(5000); 
 #endif
   EEPROM.begin(1024);
-  telnetServer.begin();
-  telnetServer.setNoDelay(true);
-  addDmesg(F("WiFi Auto-connect started"));
+  
+
+  char check;
+  EEPROM.get(512, check);
+  if (check == 0xFF || check == 0x00) {
+    needsSetup = true;
+    addDmesg(F("Security Setup Required"));
+  }
+
+  telnetServer.begin(); 
+  addDmesg(F("Secure Boot Complete"));
 #endif
   delay(500);
   Serial.println(F("--- KernelUNO v1.5 (WiFi/Advanced) ---"));
@@ -242,7 +263,8 @@ void setup() {
 }
 
 void loop() {
-  
+  if (isLockedOut) { delay(1000); return; } 
+
   if (authenticated && (millis() - lastActivity > SESSION_TIMEOUT)) {
     authenticated = false;
     kprintln(F("\nSession timeout. Logged out."));
@@ -250,7 +272,7 @@ void loop() {
   }
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetServer.hasClient()) {
+  if (telnetEnabled && telnetServer.hasClient()) {
     if (!telnetClient || !telnetClient.connected()) {
       telnetClient = telnetServer.available();
       
@@ -277,6 +299,16 @@ void loop() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   else if (telnetClient && telnetClient.available() > 0) {
     c = telnetClient.read();
+    
+    
+    if (c == 255) {
+      if (telnetClient.available() >= 2) {
+        telnetClient.read(); 
+        telnetClient.read(); 
+      }
+      return; 
+    }
+    
     hasInput = true;
     fromSerial = false;
   }
@@ -289,7 +321,10 @@ void loop() {
         inputBuffer[inputLen] = '\0';
         kprintln();
         
-        if (!authenticated && strncmp_P(inputBuffer, PSTR("login "), 6) != 0) {
+        bool isLogin = (strncmp_P(inputBuffer, PSTR("login"), 5) == 0);
+        bool isPasswd = (strncmp_P(inputBuffer, PSTR("passwd"), 6) == 0);
+        
+        if (!authenticated && !isLogin && !(needsSetup && isPasswd)) {
           kprintln(F("Access Denied. Use: login [pass]"));
         } else {
           executeCommand(inputBuffer);
@@ -708,11 +743,15 @@ void executeCommand(char* line) {
     kprintln(F("Sys  : login, logout, passwd, ps, date, uptime, uname, dmesg, df, free, clear, reboot"));
   }
   else if (strcmp_P(cmd, PSTR("login")) == 0) {
-    char savedPass[10];
-    EEPROM.get(512, savedPass);
     if (args[0] == '\0') { kprintln(F("Usage: login [pass]")); return; }
+    if (needsSetup) { kprintln(F("SECURITY ERROR: Device uninitialized. Use 'passwd' via Serial.")); return; }
     
-    if (strcmp(args, savedPass) == 0) {
+    char savedPass[10];
+    char hashedInput[10];
+    EEPROM.get(512, savedPass);
+    hashPass(args, hashedInput);
+    
+    if (strcmp(hashedInput, savedPass) == 0) {
       authenticated = true;
       loginFailCount = 0;
       lastActivity = millis();
@@ -720,9 +759,16 @@ void executeCommand(char* line) {
       addDmesg(F("User logged in"));
     } else {
       loginFailCount++;
-      addDmesg(F("Login failed!"));
-      kprint(F("Wrong Password. Delay: ")); kprint(loginFailCount * 2); kprintln(F("s"));
-      delay(loginFailCount * 2000); 
+      if (loginFailCount >= MAX_FAIL_COUNT) {
+        isLockedOut = true;
+        kprintln(F("CRITICAL: System Locked due to Brute-Force."));
+        addDmesg(F("System hard locked!"));
+      } else {
+        addDmesg(F("Login failed!"));
+        kprint(F("Access Denied. Attempts: ")); kprint(loginFailCount);
+        kprint(F(" Delay: ")); kprint(loginFailCount * 2); kprintln(F("s"));
+        delay(loginFailCount * 2000); 
+      }
     }
   }
   else if (strcmp_P(cmd, PSTR("logout")) == 0) {
@@ -730,17 +776,25 @@ void executeCommand(char* line) {
     kprintln(F("Logged out."));
   }
   else if (strcmp_P(cmd, PSTR("passwd")) == 0) {
-    if (args[0] == '\0') { kprintln(F("Usage: passwd [new_pass]")); return; }
-    if (strlen(args) > 9) { kprintln(F("Pass too long! (max 9)")); return; }
-    char newPass[10];
-    strncpy(newPass, args, 9);
-    newPass[9] = '\0';
-    EEPROM.put(512, newPass);
+    if (args[0] == '\0' || strlen(args) < 4) { kprintln(F("Usage: passwd [min 4 chars]")); return; }
+    char hashedPass[10];
+    hashPass(args, hashedPass);
+    EEPROM.put(512, hashedPass);
 #if defined(ESP8266) || defined(ESP32)
     EEPROM.commit();
 #endif
-    kprintln(F("Password updated in EEPROM."));
-    addDmesg(F("Password changed"));
+    needsSetup = false;
+    kprintln(F("Password secured and hashed in EEPROM."));
+    addDmesg(F("Root password changed"));
+  }
+  else if (strcmp_P(cmd, PSTR("telnet")) == 0) {
+    if (strcmp_P(args, PSTR("on")) == 0) {
+      telnetEnabled = true;
+      kprintln(F("NetShell (Telnet) Enabled."));
+    } else {
+      telnetEnabled = false;
+      kprintln(F("NetShell (Telnet) Disabled."));
+    }
   }
   else if (strcmp_P(cmd, PSTR("ps")) == 0) {
     Serial.print(F("Tasks: 1 (shell)\nCPU: 80MHz\nFree Heap: "));
