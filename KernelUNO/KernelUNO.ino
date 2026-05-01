@@ -65,6 +65,15 @@ unsigned long lastTelnetActivity = 0;
 #define MAX_FAIL_COUNT 5
 #define LOCKOUT_DURATION 300000
 
+
+#define EEPROM_PASS_ADDR 512
+#define EEPROM_LOCKOUT_ADDR 522
+#define EEPROM_SALT_ADDR 530
+
+
+#define PASS_SALT_LEN 4
+#define MAX_INPUT_LEN 48  
+
 #if !defined(ICACHE_FLASH_ATTR)
 #define ICACHE_FLASH_ATTR
 #endif
@@ -72,22 +81,44 @@ unsigned long lastTelnetActivity = 0;
 ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
   uint32_t hash = 0;
   int i;
+  char salt[PASS_SALT_LEN + 1];
   
+
+  EEPROM.get(EEPROM_SALT_ADDR, salt);
+  salt[PASS_SALT_LEN] = '\0';
+  
+
+  for (i = 0; i < PASS_SALT_LEN && salt[i] != '\0'; i++) {
+    hash += salt[i];
+    hash += (hash << 10);
+    hash ^= (hash >> 6);
+  }
+  
+
   for (i = 0; input[i] != '\0' && i < 32; i++) {
     hash += input[i];
     hash += (hash << 10);
     hash ^= (hash >> 6);
   }
   
-  hash += (hash << 3);
-  hash ^= (hash >> 11);
-  hash += (hash << 15);
+
+  for (i = 0; i < 3; i++) {
+    hash += (hash << 3);
+    hash ^= (hash >> 11);
+    hash += (hash << 15);
+  }
   
   memset(output, 0, 10);
   for (i = 0; i < 9; i++) {
     output[i] = (hash >> (i * 3)) & 0xFF;
   }
   output[9] = '\0';
+}
+
+
+ICACHE_FLASH_ATTR bool isTimeout(unsigned long lastActivity, unsigned long timeout) {
+  unsigned long currentTime = millis();
+  return (currentTime - lastActivity) >= timeout;
 }
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -98,47 +129,69 @@ WiFiClient telnetClient;
 
 void kprint(const __FlashStringHelper* s) {
   Serial.print(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+#endif
 }
 void kprint(const char* s) {
   Serial.print(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+#endif
 }
 void kprint(int n) {
   Serial.print(n);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.print(n);
+#endif
 }
 void kprintln(const __FlashStringHelper* s) {
   Serial.println(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println(s);
+#endif
 }
 void kprintln(const char* s) {
   Serial.println(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println(s);
+#endif
 }
 void kprintln() {
   Serial.println();
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println();
+#endif
 }
 void kprintln(int n) {
   Serial.println(n);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println(n);
+#endif
 }
 void kprintln(unsigned long n) {
   Serial.println(n);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println(n);
+#endif
 }
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 void kprintln(IPAddress ip) {
   Serial.println(ip);
   if (telnetClient && telnetClient.connected()) telnetClient.println(ip);
 }
+#endif
 void kprint(String s) {
   Serial.print(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+#endif
 }
 void kprintln(String s) {
   Serial.println(s);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient && telnetClient.connected()) telnetClient.println(s);
+#endif
 }
 
 ICACHE_FLASH_ATTR int freeMemory() {
@@ -281,6 +334,7 @@ ICACHE_FLASH_ATTR void printPrompt() {
   Serial.print(F(":"));
   Serial.print(currentPath);
   Serial.print(F("# "));
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetClient) {
     telnetClient.print(F("root@"));
     telnetClient.print(F(BOARD_NAME));
@@ -288,6 +342,7 @@ ICACHE_FLASH_ATTR void printPrompt() {
     telnetClient.print(currentPath);
     telnetClient.print(F("# "));
   }
+#endif
 }
 
 ICACHE_FLASH_ATTR void setup() {
@@ -315,19 +370,20 @@ ICACHE_FLASH_ATTR void setup() {
   EEPROM.begin(1024);
 
   char check;
-  EEPROM.get(512, check);
+  EEPROM.get(EEPROM_PASS_ADDR, check);
   if (check == 0xFF || check == 0x00) {
     needsSetup = true;
     addDmesg(F("Security Setup Required"));
   }
 
   unsigned long lockoutTime;
-  EEPROM.get(522, lockoutTime);
-  if (lockoutTime > 0 && (millis() - lockoutTime < LOCKOUT_DURATION)) {
+  EEPROM.get(EEPROM_LOCKOUT_ADDR, lockoutTime);
+  unsigned long currentTime = millis();
+  if (lockoutTime > 0 && ((currentTime - lockoutTime) < LOCKOUT_DURATION)) {
     isLockedOut = true;
     addDmesg(F("System locked from previous session"));
   } else {
-    EEPROM.put(522, (unsigned long)0);
+    EEPROM.put(EEPROM_LOCKOUT_ADDR, (unsigned long)0);
 #if defined(ESP8266) || defined(ESP32)
     EEPROM.commit();
 #endif
@@ -351,13 +407,14 @@ ICACHE_FLASH_ATTR void setup() {
 void loop() {
   if (isLockedOut) { delay(1000); return; } 
 
-  if (serialAuthenticated && (millis() - lastSerialActivity > SESSION_TIMEOUT)) {
+
+  if (serialAuthenticated && isTimeout(lastSerialActivity, SESSION_TIMEOUT)) {
     serialAuthenticated = false;
     Serial.println(F("\nSerial session timeout. Logged out."));
     printPrompt();
   }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetAuthenticated && (millis() - lastTelnetActivity > SESSION_TIMEOUT)) {
+  if (telnetAuthenticated && isTimeout(lastTelnetActivity, SESSION_TIMEOUT)) {
     telnetAuthenticated = false;
     if (telnetClient && telnetClient.connected()) {
       telnetClient.println(F("\nTelnet session timeout. Logged out."));
@@ -444,14 +501,16 @@ void loop() {
         kprint(F("\b \b"));
       }
     }
-    else if (inputLen < 63) {
+    else if (inputLen < MAX_INPUT_LEN - 1) {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
       ESP.wdtFeed(); 
 #endif
       Serial.print(c);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
       if (fromSerial && telnetClient && telnetClient.connected()) {
         telnetClient.print(c);
       }
+#endif
       
       inputBuffer[inputLen] = c;
       inputLen++;
@@ -553,6 +612,8 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     sp = indexOf(args, " ");
     if (sp == -1) { Serial.println(F("Usage: pinmode [pin] [in/out]")); return; }
     pin = atoi_safe(args);
+
+    if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin must be 0-19")); return; }
     char mode[8] = "";
     strncpy(mode, args + sp + 1, 7);
     mode[7] = '\0';
@@ -565,22 +626,33 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       pinMode(pin, INPUT_PULLUP);
       Serial.print(F("Pin ")); Serial.print(pin); Serial.println(F(" set to INPUT"));
     }
+    else {
+      Serial.println(F("Error: Mode must be 'in' or 'out'"));
+    }
   }
   else if (strcmp_P(cmd, PSTR("write")) == 0) {
     sp = indexOf(args, " ");
     if (sp == -1) { Serial.println(F("Usage: write [pin] [high/low]")); return; }
     pin = atoi_safe(args);
+
+    if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin must be 0-19")); return; }
     char val[8] = "";
     strncpy(val, args + sp + 1, 7);
     val[7] = '\0';
     toLowercase(val);
-    pinMode(pin, (strcmp_P(val, PSTR("high")) == 0 ? HIGH : LOW));
+    
+    if (strcmp_P(val, PSTR("high")) != 0 && strcmp_P(val, PSTR("low")) != 0) {
+      Serial.println(F("Error: Value must be 'high' or 'low'")); return;
+    }
+    pinMode(pin, OUTPUT);
     digitalWrite(pin, (strcmp_P(val, PSTR("high")) == 0 ? HIGH : LOW));
     Serial.print(F("Pin ")); Serial.print(pin); Serial.print(F(" wrote "));
     Serial.println(strcmp_P(val, PSTR("high")) == 0 ? F("HIGH") : F("LOW"));
   }
   else if (strcmp_P(cmd, PSTR("read")) == 0) {
     pin = atoi_safe(args);
+  
+    if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin must be 0-19")); return; }
     int value = digitalRead(pin);
     Serial.print(F("Pin ")); Serial.print(pin);
     Serial.print(F(" value: ")); Serial.println(value);
@@ -618,6 +690,8 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       addDmesg(F("Disco complete"));
     } else {
       pin = atoi_safe(pinStr);
+
+      if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin must be 0-19")); return; }
       if (strcmp_P(action, PSTR("on")) == 0) {
         pinMode(pin, OUTPUT);
         digitalWrite(pin, HIGH);
@@ -632,6 +706,9 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
         pinMode(pin, OUTPUT);
         digitalWrite(pin, !digitalRead(pin));
         kprint(F("GPIO ")); kprint(pin); kprintln(F(" toggled"));
+      }
+      else {
+        Serial.println(F("Error: Action must be 'on', 'off', or 'toggle'"));
       }
     }
   }
@@ -875,7 +952,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     
     char savedPass[10];
     char hashedInput[10];
-    EEPROM.get(512, savedPass);
+    EEPROM.get(EEPROM_PASS_ADDR, savedPass);
     hashPass(args, hashedInput);
     
     if (strcmp(hashedInput, savedPass) == 0) {
@@ -894,7 +971,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       if (loginFailCount >= MAX_FAIL_COUNT) {
         isLockedOut = true;
         unsigned long lockoutTime = millis();
-        EEPROM.put(522, lockoutTime);
+        EEPROM.put(EEPROM_LOCKOUT_ADDR, lockoutTime);
 #if defined(ESP8266) || defined(ESP32)
         EEPROM.commit();
 #endif
@@ -902,9 +979,12 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
         addDmesg(F("System hard locked!"));
       } else {
         addDmesg(F("Login failed!"));
+
+        unsigned long delayMs = 1000UL << loginFailCount; 
+        if (delayMs > 30000) delayMs = 30000;  
         kprint(F("Access Denied. Attempts: ")); kprint(loginFailCount);
-        kprint(F(" Delay: ")); kprint(loginFailCount * 2); kprintln(F("s"));
-        delay(loginFailCount * 2000); 
+        kprint(F(" Delay: ")); kprint(delayMs / 1000); kprintln(F("s"));
+        delay(delayMs); 
       }
     }
   }
@@ -919,13 +999,23 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
   else if (strcmp_P(cmd, PSTR("passwd")) == 0) {
     if (args[0] == '\0' || strlen(args) < 4) { kprintln(F("Usage: passwd [min 4 chars]")); return; }
     char hashedPass[10];
+    char salt[PASS_SALT_LEN + 1];
+    
+   
+    for (int i = 0; i < PASS_SALT_LEN; i++) {
+      salt[i] = 'a' + (analogRead(A0) % 26); 
+      delay(1);  
+    }
+    salt[PASS_SALT_LEN] = '\0';
+
+    EEPROM.put(EEPROM_SALT_ADDR, salt);
     hashPass(args, hashedPass);
-    EEPROM.put(512, hashedPass);
+    EEPROM.put(EEPROM_PASS_ADDR, hashedPass);
 #if defined(ESP8266) || defined(ESP32)
     EEPROM.commit();
 #endif
     needsSetup = false;
-    kprintln(F("Password secured and hashed in EEPROM."));
+    kprintln(F("Password secured with salt and hashed in EEPROM."));
     addDmesg(F("Root password changed"));
   }
   else if (strcmp_P(cmd, PSTR("telnet")) == 0) {
