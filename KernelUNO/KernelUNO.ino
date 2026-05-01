@@ -11,13 +11,13 @@
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   #define MAX_FILES 16
 #else
-  #define MAX_FILES 8
+  #define MAX_FILES 6
 #endif
 
 #define NAME_LEN 10         
-#define CONTENT_LEN 24      
+#define CONTENT_LEN 16      
 #define PATH_LEN 12         
-#define DMESG_LINES 4
+#define DMESG_LINES 3
 #define DMESG_LEN 32
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -47,28 +47,45 @@ typedef struct {
 
 RAMFile vfs[MAX_FILES];
 char currentPath[PATH_LEN] = "/";
-char inputBuffer[64] = "";
+char inputBuffer[48] = "";
 int inputLen = 0;
 DmesgEntry dmesg[DMESG_LINES];
 int dmesgIndex = 0;
 int shellDepth = 0;
-bool authenticated = false; 
+bool serialAuthenticated = false;
+bool telnetAuthenticated = false;
 uint8_t loginFailCount = 0; 
 bool isLockedOut = false;
 bool needsSetup = false;
 bool telnetEnabled = false;
-unsigned long lastActivity = 0; 
+unsigned long lastSerialActivity = 0;
+unsigned long lastTelnetActivity = 0; 
 #define MAX_SHELL_DEPTH 3
 #define SESSION_TIMEOUT 300000 
 #define MAX_FAIL_COUNT 5
+#define LOCKOUT_DURATION 300000
 
+#if !defined(ICACHE_FLASH_ATTR)
+#define ICACHE_FLASH_ATTR
+#endif
 
-void hashPass(const char* input, char* output) {
-  uint8_t key = 0xA5;
-  memset(output, 0, 10); 
-  for (int i = 0; i < 9; i++) {
-    if (input[i] == '\0') break;
-    output[i] = (input[i] ^ key) + (i * 2);
+ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
+  uint32_t hash = 0;
+  int i;
+  
+  for (i = 0; input[i] != '\0' && i < 32; i++) {
+    hash += input[i];
+    hash += (hash << 10);
+    hash ^= (hash >> 6);
+  }
+  
+  hash += (hash << 3);
+  hash ^= (hash >> 11);
+  hash += (hash << 15);
+  
+  memset(output, 0, 10);
+  for (i = 0; i < 9; i++) {
+    output[i] = (hash >> (i * 3)) & 0xFF;
   }
   output[9] = '\0';
 }
@@ -124,7 +141,7 @@ void kprintln(String s) {
   if (telnetClient && telnetClient.connected()) telnetClient.println(s);
 }
 
-int freeMemory() {
+ICACHE_FLASH_ATTR int freeMemory() {
 #if defined(ARDUINO_ARCH_AVR)
   extern int __heap_start, *__brkval;
   int v;
@@ -149,7 +166,7 @@ void addDmesg(const __FlashStringHelper* msg) {
   dmesgIndex++;
 }
 
-void addDmesgRam(const char* msg) {
+ICACHE_FLASH_ATTR void addDmesgRam(const char* msg) {
   if (dmesgIndex >= DMESG_LINES) dmesgIndex = 0;
   dmesg[dmesgIndex].timestamp = millis() / 1000;
   strncpy(dmesg[dmesgIndex].message, msg, DMESG_LEN - 1);
@@ -157,14 +174,40 @@ void addDmesgRam(const char* msg) {
   dmesgIndex++;
 }
 
-void initFS() {
+ICACHE_FLASH_ATTR void initFS() {
   int d, i;
 
+#if defined(ARDUINO_ARCH_AVR)
+  const char dirs_P[] PROGMEM = "home\0dev\0";
+  const char pins_P[] PROGMEM = "pin2\0pin3\0";
+  const char sysDirs_P[] PROGMEM = "sys\0bin\0";
+  
+  const char* dirs = dirs_P;
+  const char* pins = pins_P;
+  const char* sysDirs = sysDirs_P;
+#else
   const char* dirs[] = {"home", "dev"};
+  const char* pins[] = {"pin2", "pin3"};
+  const char* sysDirs[] = {"sys", "bin"};
+#endif
+
+#if defined(ARDUINO_ARCH_AVR)
   for (d = 0; d < 2; d++) {
+    const char* dirName = dirs;
+    for (int skip = 0; skip < d; skip++) {
+      while (pgm_read_byte(dirName) != '\0') dirName++;
+      dirName++;
+    }
+#else
+  for (d = 0; d < 2; d++) {
+#endif
     for (i = 0; i < MAX_FILES; i++) {
       if (!(vfs[i].flags & FLAG_ACTIVE)) {
+#if defined(ARDUINO_ARCH_AVR)
+        strncpy_P(vfs[i].name, dirName, NAME_LEN - 1);
+#else
         strncpy(vfs[i].name, dirs[d], NAME_LEN - 1);
+#endif
         vfs[i].name[NAME_LEN - 1] = '\0';
         strncpy(vfs[i].parentDir, "/", PATH_LEN - 1);
         vfs[i].parentDir[PATH_LEN - 1] = '\0';
@@ -175,11 +218,23 @@ void initFS() {
   }
 
   char devPath[PATH_LEN] = "/dev/";
-  const char* pins[] = {"pin2", "pin3", "pin4"};
-  for (d = 0; d < 3; d++) {
+#if defined(ARDUINO_ARCH_AVR)
+  for (d = 0; d < 2; d++) {
+    const char* pinName = pins;
+    for (int skip = 0; skip < d; skip++) {
+      while (pgm_read_byte(pinName) != '\0') pinName++;
+      pinName++;
+    }
+#else
+  for (d = 0; d < 2; d++) {
+#endif
     for (i = 0; i < MAX_FILES; i++) {
       if (!(vfs[i].flags & FLAG_ACTIVE)) {
+#if defined(ARDUINO_ARCH_AVR)
+        strncpy_P(vfs[i].name, pinName, NAME_LEN - 1);
+#else
         strncpy(vfs[i].name, pins[d], NAME_LEN - 1);
+#endif
         vfs[i].name[NAME_LEN - 1] = '\0';
         strncpy(vfs[i].parentDir, devPath, PATH_LEN - 1);
         vfs[i].parentDir[PATH_LEN - 1] = '\0';
@@ -191,11 +246,23 @@ void initFS() {
   }
 
 
-  const char* sysDirs[] = {"sys", "bin"};
+#if defined(ARDUINO_ARCH_AVR)
   for (d = 0; d < 2; d++) {
+    const char* sysDirName = sysDirs;
+    for (int skip = 0; skip < d; skip++) {
+      while (pgm_read_byte(sysDirName) != '\0') sysDirName++;
+      sysDirName++;
+    }
+#else
+  for (d = 0; d < 2; d++) {
+#endif
     for (i = 0; i < MAX_FILES; i++) {
       if (!(vfs[i].flags & FLAG_ACTIVE)) {
+#if defined(ARDUINO_ARCH_AVR)
+        strncpy_P(vfs[i].name, sysDirName, NAME_LEN - 1);
+#else
         strncpy(vfs[i].name, sysDirs[d], NAME_LEN - 1);
+#endif
         vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
         strncpy(vfs[i].parentDir, "/", PATH_LEN - 1);
         break;
@@ -208,7 +275,7 @@ void initFS() {
   addDmesg(F("Ready for commands"));
 }
 
-void printPrompt() {
+ICACHE_FLASH_ATTR void printPrompt() {
   Serial.print(F("root@"));
   Serial.print(F(BOARD_NAME));
   Serial.print(F(":"));
@@ -223,7 +290,7 @@ void printPrompt() {
   }
 }
 
-void setup() {
+ICACHE_FLASH_ATTR void setup() {
   Serial.begin(115200);
   delay(500); 
   Serial.println(F("\n\n[System] Booting KernelUNO..."));
@@ -246,13 +313,24 @@ void setup() {
   ESP.wdtEnable(5000); 
 #endif
   EEPROM.begin(1024);
-  
 
   char check;
   EEPROM.get(512, check);
   if (check == 0xFF || check == 0x00) {
     needsSetup = true;
     addDmesg(F("Security Setup Required"));
+  }
+
+  unsigned long lockoutTime;
+  EEPROM.get(522, lockoutTime);
+  if (lockoutTime > 0 && (millis() - lockoutTime < LOCKOUT_DURATION)) {
+    isLockedOut = true;
+    addDmesg(F("System locked from previous session"));
+  } else {
+    EEPROM.put(522, (unsigned long)0);
+#if defined(ESP8266) || defined(ESP32)
+    EEPROM.commit();
+#endif
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -273,11 +351,19 @@ void setup() {
 void loop() {
   if (isLockedOut) { delay(1000); return; } 
 
-  if (authenticated && (millis() - lastActivity > SESSION_TIMEOUT)) {
-    authenticated = false;
-    kprintln(F("\nSession timeout. Logged out."));
+  if (serialAuthenticated && (millis() - lastSerialActivity > SESSION_TIMEOUT)) {
+    serialAuthenticated = false;
+    Serial.println(F("\nSerial session timeout. Logged out."));
     printPrompt();
   }
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+  if (telnetAuthenticated && (millis() - lastTelnetActivity > SESSION_TIMEOUT)) {
+    telnetAuthenticated = false;
+    if (telnetClient && telnetClient.connected()) {
+      telnetClient.println(F("\nTelnet session timeout. Logged out."));
+    }
+  }
+#endif
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (telnetEnabled && telnetServer.hasClient()) {
@@ -323,7 +409,11 @@ void loop() {
 #endif
 
   if (hasInput) {
-    lastActivity = millis(); 
+    if (fromSerial) {
+      lastSerialActivity = millis();
+    } else {
+      lastTelnetActivity = millis();
+    } 
     if (c == '\r' || c == '\n') {
       if (inputLen > 0) {
         inputBuffer[inputLen] = '\0';
@@ -331,11 +421,12 @@ void loop() {
         
         bool isLogin = (strncmp_P(inputBuffer, PSTR("login"), 5) == 0);
         bool isPasswd = (strncmp_P(inputBuffer, PSTR("passwd"), 6) == 0);
+        bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
         
-        if (!authenticated && !isLogin && !(needsSetup && isPasswd)) {
+        if (!currentAuth && !isLogin && !(needsSetup && isPasswd && fromSerial)) {
           kprintln(F("Access Denied. Use: login [pass]"));
         } else {
-          executeCommand(inputBuffer);
+          executeCommand(inputBuffer, fromSerial);
         }
         
         inputLen = 0;
@@ -368,7 +459,7 @@ void loop() {
   }
 }
 
-int indexOf(const char* str, const char* substr) {
+ICACHE_FLASH_ATTR int indexOf(const char* str, const char* substr) {
   int i, j, slen = strlen(str), sublen = strlen(substr);
   for (i = 0; i <= slen - sublen; i++) {
     int match = 1;
@@ -380,7 +471,7 @@ int indexOf(const char* str, const char* substr) {
   return -1;
 }
 
-int atoi_safe(const char* str) {
+ICACHE_FLASH_ATTR int atoi_safe(const char* str) {
   int num = 0;
   while (*str >= '0' && *str <= '9') {
     num = num * 10 + (*str - '0');
@@ -389,14 +480,14 @@ int atoi_safe(const char* str) {
   return num;
 }
 
-void toLowercase(char* str) {
+ICACHE_FLASH_ATTR void toLowercase(char* str) {
   int i;
   for (i = 0; str[i] != '\0'; i++) {
     if (str[i] >= 'A' && str[i] <= 'Z') str[i] = str[i] - 'A' + 'a';
   }
 }
 
-int safeConcatPath(char* dest, const char* add) {
+ICACHE_FLASH_ATTR int safeConcatPath(char* dest, const char* add) {
   int destLen = strlen(dest);
   int addLen = strlen(add);
   if (destLen + addLen + 2 >= PATH_LEN) return 0;
@@ -407,7 +498,30 @@ int safeConcatPath(char* dest, const char* add) {
 
 void runScript(const char* content);
 
-void executeCommand(char* line) {
+ICACHE_FLASH_ATTR bool isTelnetSafeCommand(const char* cmd) {
+  if (strcmp_P(cmd, PSTR("ls")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("cd")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("pwd")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("cat")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("info")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("dmesg")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("uptime")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("df")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("free")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("whoami")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("uname")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("ps")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("date")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("help")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("clear")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("read")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("ping")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("ifconfig")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("wifi")) == 0) return true;
+  return false;
+}
+
+ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
   char* cmd = line;
   char* args = NULL;
   int i, sp, pin, count;
@@ -426,6 +540,11 @@ void executeCommand(char* line) {
   }
 
   toLowercase(cmd);
+
+  if (!fromSerial && !isTelnetSafeCommand(cmd)) {
+    kprintln(F("Telnet: Command not allowed (read-only mode)"));
+    return;
+  }
 
   int memBefore = freeMemory();
 
@@ -760,15 +879,25 @@ void executeCommand(char* line) {
     hashPass(args, hashedInput);
     
     if (strcmp(hashedInput, savedPass) == 0) {
-      authenticated = true;
+      if (fromSerial) {
+        serialAuthenticated = true;
+        lastSerialActivity = millis();
+      } else {
+        telnetAuthenticated = true;
+        lastTelnetActivity = millis();
+      }
       loginFailCount = 0;
-      lastActivity = millis();
       kprintln(F("Login Successful."));
       addDmesg(F("User logged in"));
     } else {
       loginFailCount++;
       if (loginFailCount >= MAX_FAIL_COUNT) {
         isLockedOut = true;
+        unsigned long lockoutTime = millis();
+        EEPROM.put(522, lockoutTime);
+#if defined(ESP8266) || defined(ESP32)
+        EEPROM.commit();
+#endif
         kprintln(F("CRITICAL: System Locked due to Brute-Force."));
         addDmesg(F("System hard locked!"));
       } else {
@@ -780,7 +909,11 @@ void executeCommand(char* line) {
     }
   }
   else if (strcmp_P(cmd, PSTR("logout")) == 0) {
-    authenticated = false;
+    if (fromSerial) {
+      serialAuthenticated = false;
+    } else {
+      telnetAuthenticated = false;
+    }
     kprintln(F("Logged out."));
   }
   else if (strcmp_P(cmd, PSTR("passwd")) == 0) {
@@ -809,6 +942,7 @@ void executeCommand(char* line) {
     kprintln(F("0    kernel    RUNNING"));
     kprintln(F("1    shell     ACTIVE"));
     kprint(F("Free Heap: ")); kprintln(freeMemory());
+
   }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   else if (strcmp_P(cmd, PSTR("ping")) == 0) {
@@ -835,7 +969,7 @@ void executeCommand(char* line) {
     if (http.begin(client, url)) {
       int httpCode = http.GET();
       if (httpCode == HTTP_CODE_OK) {
-        String payload = http.getString(); 
+        WiFiClient* stream = http.getStreamPtr();
         int found = -1;
         for (int j = 0; j < MAX_FILES; j++) {
            if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, file) == 0) { found = j; break; }
@@ -843,7 +977,13 @@ void executeCommand(char* line) {
         }
         if (found != -1) {
           strncpy(vfs[found].name, file, NAME_LEN-1);
-          strncpy(vfs[found].content, payload.c_str(), CONTENT_LEN-1);
+          vfs[found].name[NAME_LEN-1] = '\0';
+          int bytesRead = 0;
+          while (stream->available() && bytesRead < CONTENT_LEN - 1) {
+            vfs[found].content[bytesRead] = stream->read();
+            bytesRead++;
+          }
+          vfs[found].content[bytesRead] = '\0';
           vfs[found].flags = FLAG_ACTIVE;
           Serial.println(F("Saved."));
         }
@@ -972,7 +1112,7 @@ void executeCommand(char* line) {
 
 
 
-void runScript(const char* content) {
+ICACHE_FLASH_ATTR void runScript(const char* content) {
   if (shellDepth >= MAX_SHELL_DEPTH) {
     Serial.println(F("sh: max recursion depth reached"));
     return;
@@ -992,7 +1132,7 @@ void runScript(const char* content) {
         lineNum++;
         Serial.print(F("[sh:")); Serial.print(lineNum); Serial.print(F("] "));
         Serial.println(line);
-        executeCommand(line);
+        executeCommand(line, true);
         li = 0;
       }
     } else {
