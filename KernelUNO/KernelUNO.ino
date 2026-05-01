@@ -17,7 +17,7 @@
 #define NAME_LEN 10         
 #define CONTENT_LEN 16      
 #define PATH_LEN 12         
-#define DMESG_LINES 3
+#define DMESG_LINES 10
 #define DMESG_LEN 32
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -60,6 +60,8 @@ bool needsSetup = false;
 bool telnetEnabled = false;
 unsigned long lastSerialActivity = 0;
 unsigned long lastTelnetActivity = 0; 
+unsigned long lastLoginAttempt = 0;
+unsigned long loginCooldown = 0;
 #define MAX_SHELL_DEPTH 3
 #define SESSION_TIMEOUT 300000 
 #define MAX_FAIL_COUNT 5
@@ -78,23 +80,22 @@ unsigned long lastTelnetActivity = 0;
 #define ICACHE_FLASH_ATTR
 #endif
 
+#define KERNEL_KEY 0x5A
+
 ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
   uint32_t hash = 0;
   int i;
   char salt[PASS_SALT_LEN + 1];
   
-
   EEPROM.get(EEPROM_SALT_ADDR, salt);
   salt[PASS_SALT_LEN] = '\0';
   
-
   for (i = 0; i < PASS_SALT_LEN && salt[i] != '\0'; i++) {
     hash += salt[i];
     hash += (hash << 10);
     hash ^= (hash >> 6);
   }
   
-
   for (i = 0; input[i] != '\0' && i < 32; i++) {
     hash += input[i];
     hash += (hash << 10);
@@ -102,7 +103,7 @@ ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
   }
   
 
-  for (i = 0; i < 3; i++) {
+  for (i = 0; i < 8; i++) {
     hash += (hash << 3);
     hash ^= (hash >> 11);
     hash += (hash << 15);
@@ -110,7 +111,8 @@ ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
   
   memset(output, 0, 10);
   for (i = 0; i < 9; i++) {
-    output[i] = (hash >> (i * 3)) & 0xFF;
+
+    output[i] = ((hash >> (i * 3)) & 0xFF) ^ KERNEL_KEY;
   }
   output[9] = '\0';
 }
@@ -229,95 +231,36 @@ ICACHE_FLASH_ATTR void addDmesgRam(const char* msg) {
 
 ICACHE_FLASH_ATTR void initFS() {
   int d, i;
+  
+  
+  memset(vfs, 0, sizeof(vfs));
 
 #if defined(ARDUINO_ARCH_AVR)
-  const char dirs_P[] PROGMEM = "home\0dev\0";
-  const char pins_P[] PROGMEM = "pin2\0pin3\0";
-  const char sysDirs_P[] PROGMEM = "sys\0bin\0";
-  
-  const char* dirs = dirs_P;
-  const char* pins = pins_P;
+  const char sysDirs_P[] PROGMEM = "home\0dev\0sys\0bin\0";
   const char* sysDirs = sysDirs_P;
 #else
-  const char* dirs[] = {"home", "dev"};
-  const char* pins[] = {"pin2", "pin3"};
-  const char* sysDirs[] = {"sys", "bin"};
+  const char* sysDirs[] = {"home", "dev", "sys", "bin"};
 #endif
 
+  
+  for (d = 0; d < 4; d++) {
 #if defined(ARDUINO_ARCH_AVR)
-  for (d = 0; d < 2; d++) {
-    const char* dirName = dirs;
+    const char* dirName = sysDirs;
     for (int skip = 0; skip < d; skip++) {
       while (pgm_read_byte(dirName) != '\0') dirName++;
       dirName++;
     }
-#else
-  for (d = 0; d < 2; d++) {
 #endif
     for (i = 0; i < MAX_FILES; i++) {
       if (!(vfs[i].flags & FLAG_ACTIVE)) {
 #if defined(ARDUINO_ARCH_AVR)
         strncpy_P(vfs[i].name, dirName, NAME_LEN - 1);
 #else
-        strncpy(vfs[i].name, dirs[d], NAME_LEN - 1);
-#endif
-        vfs[i].name[NAME_LEN - 1] = '\0';
-        strncpy(vfs[i].parentDir, "/", PATH_LEN - 1);
-        vfs[i].parentDir[PATH_LEN - 1] = '\0';
-        vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
-        break;
-      }
-    }
-  }
-
-  char devPath[PATH_LEN] = "/dev/";
-#if defined(ARDUINO_ARCH_AVR)
-  for (d = 0; d < 2; d++) {
-    const char* pinName = pins;
-    for (int skip = 0; skip < d; skip++) {
-      while (pgm_read_byte(pinName) != '\0') pinName++;
-      pinName++;
-    }
-#else
-  for (d = 0; d < 2; d++) {
-#endif
-    for (i = 0; i < MAX_FILES; i++) {
-      if (!(vfs[i].flags & FLAG_ACTIVE)) {
-#if defined(ARDUINO_ARCH_AVR)
-        strncpy_P(vfs[i].name, pinName, NAME_LEN - 1);
-#else
-        strncpy(vfs[i].name, pins[d], NAME_LEN - 1);
-#endif
-        vfs[i].name[NAME_LEN - 1] = '\0';
-        strncpy(vfs[i].parentDir, devPath, PATH_LEN - 1);
-        vfs[i].parentDir[PATH_LEN - 1] = '\0';
-        vfs[i].flags = FLAG_ACTIVE; 
-        vfs[i].content[0] = '\0';
-        break;
-      }
-    }
-  }
-
-
-#if defined(ARDUINO_ARCH_AVR)
-  for (d = 0; d < 2; d++) {
-    const char* sysDirName = sysDirs;
-    for (int skip = 0; skip < d; skip++) {
-      while (pgm_read_byte(sysDirName) != '\0') sysDirName++;
-      sysDirName++;
-    }
-#else
-  for (d = 0; d < 2; d++) {
-#endif
-    for (i = 0; i < MAX_FILES; i++) {
-      if (!(vfs[i].flags & FLAG_ACTIVE)) {
-#if defined(ARDUINO_ARCH_AVR)
-        strncpy_P(vfs[i].name, sysDirName, NAME_LEN - 1);
-#else
         strncpy(vfs[i].name, sysDirs[d], NAME_LEN - 1);
 #endif
-        vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
+        vfs[i].name[NAME_LEN - 1] = '\0';
         strncpy(vfs[i].parentDir, "/", PATH_LEN - 1);
+        vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
         break;
       }
     }
@@ -371,6 +314,7 @@ ICACHE_FLASH_ATTR void setup() {
 
   char check;
   EEPROM.get(EEPROM_PASS_ADDR, check);
+
   if (check == 0xFF || check == 0x00) {
     needsSetup = true;
     addDmesg(F("Security Setup Required"));
@@ -438,6 +382,7 @@ void loop() {
   }
 #endif
 
+  static char lastChar = 0;
   char c = 0;
   bool hasInput = false;
   bool fromSerial = false;
@@ -448,11 +393,13 @@ void loop() {
     fromSerial = true;
   } 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  else if (telnetClient && telnetClient.available() > 0) {
+  else if (telnetEnabled && telnetClient && telnetClient.available() > 0) {
     c = telnetClient.read();
     
-    
+
     if (c == 255) {
+      unsigned long startWait = millis();
+      while (telnetClient.available() < 2 && millis() - startWait < 50) yield(); 
       if (telnetClient.available() >= 2) {
         telnetClient.read(); 
         telnetClient.read(); 
@@ -466,12 +413,26 @@ void loop() {
 #endif
 
   if (hasInput) {
+    if (millis() - lastLoginAttempt < loginCooldown) {
+      if (c == '\r' || c == '\n') {
+        kprint(F("\rSystem Cooldown: ")); kprint((loginCooldown - (millis() - lastLoginAttempt)) / 1000); kprintln(F("s remaining."));
+      }
+      return; 
+    }
+
     if (fromSerial) {
       lastSerialActivity = millis();
     } else {
       lastTelnetActivity = millis();
     } 
     if (c == '\r' || c == '\n') {
+    
+      if ((c == '\n' && lastChar == '\r') || (c == '\r' && lastChar == '\n')) {
+        lastChar = 0; 
+        return;
+      }
+      lastChar = c;
+
       if (inputLen > 0) {
         inputBuffer[inputLen] = '\0';
         kprintln();
@@ -494,26 +455,35 @@ void loop() {
         printPrompt();
       }
     }
-    else if (c == 8 || c == 127) {
-      if (inputLen > 0) {
-        inputLen--;
-        inputBuffer[inputLen] = '\0';
-        kprint(F("\b \b"));
+    else {
+      lastChar = c;
+      if (c == 8 || c == 127) {
+        if (inputLen > 0) {
+          inputLen--;
+          inputBuffer[inputLen] = '\0';
+          kprint(F("\b \b"));
+        }
       }
-    }
-    else if (inputLen < MAX_INPUT_LEN - 1) {
+      else if (inputLen < MAX_INPUT_LEN - 1) {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-      ESP.wdtFeed(); 
+        ESP.wdtFeed(); 
 #endif
-      Serial.print(c);
+        
+        if (fromSerial) {
+          Serial.print(c);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-      if (fromSerial && telnetClient && telnetClient.connected()) {
-        telnetClient.print(c);
+          if (telnetClient && telnetClient.connected()) telnetClient.print(c);
+#endif
+        } else {
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+          if (telnetClient && telnetClient.connected()) telnetClient.print(c);
+#endif
+          Serial.print(c); 
+        }
+        
+        inputBuffer[inputLen] = c;
+        inputLen++;
       }
-#endif
-      
-      inputBuffer[inputLen] = c;
-      inputLen++;
     }
   }
 }
@@ -714,6 +684,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
   }
   else if (strcmp_P(cmd, PSTR("ls")) == 0) {
     int empty = 1, j;
+
     for (j = 0; j < MAX_FILES; j++) {
       if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].parentDir, currentPath) == 0) {
         kprint(vfs[j].name);
@@ -721,6 +692,11 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
         kprint(F("  "));
         empty = 0;
       }
+    }
+  
+    if (strcmp(currentPath, "/dev/") == 0) {
+      kprint(F("null  led  a0  a1  a2  a3  a4  a5  "));
+      empty = 0;
     }
     if (empty) kprint(F("(empty)"));
     kprintln();
@@ -745,17 +721,17 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       strncpy(currentPath, "/", PATH_LEN - 1);
       currentPath[PATH_LEN - 1] = '\0';
     } else {
+      // Improved CD: Support leading '/' and relative paths
+      char* target = (args[0] == '/') ? (args + 1) : args;
+      const char* searchPath = (args[0] == '/') ? "/" : currentPath;
+      
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
         if ((vfs[j].flags & FLAG_ACTIVE) && (vfs[j].flags & FLAG_ISDIR) &&
-            strcmp(args, vfs[j].name) == 0 &&
-            strcmp(vfs[j].parentDir, currentPath) == 0) {
-          if (!safeConcatPath(currentPath, vfs[j].name)) {
-            strncpy(currentPath, "/", PATH_LEN - 1);
-            currentPath[PATH_LEN - 1] = '\0';
-            Serial.println(F("Path too long."));
-            return;
-          }
+            strcmp(target, vfs[j].name) == 0 &&
+            strcmp(vfs[j].parentDir, searchPath) == 0) {
+          strncpy(currentPath, searchPath, PATH_LEN - 1);
+          safeConcatPath(currentPath, vfs[j].name);
           found = 1;
           break;
         }
@@ -773,6 +749,18 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       char* text = args;
       char* filename = args + arrow + 3;
       
+   
+      if (strcmp(currentPath, "/dev/") == 0) {
+        if (strcmp_P(filename, PSTR("led")) == 0) {
+          pinMode(LED_BUILTIN, OUTPUT);
+          digitalWrite(LED_BUILTIN, (text[0] == '1') ? HIGH : LOW);
+          kprintln(F("LED updated."));
+          return;
+        } else if (strcmp_P(filename, PSTR("null")) == 0) {
+          return; 
+        }
+      }
+
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
         if ((vfs[j].flags & FLAG_ACTIVE) && !(vfs[j].flags & FLAG_ISDIR) &&
@@ -781,14 +769,6 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
           strncpy(vfs[j].content, text, CONTENT_LEN - 1);
           vfs[j].content[CONTENT_LEN - 1] = '\0';
           kprintln(F("Saved."));
-          if (strcmp_P(vfs[j].parentDir, PSTR("/dev/")) == 0 && strncmp_P(vfs[j].name, PSTR("pin"), 3) == 0) {
-            int devPin = atoi_safe(vfs[j].name + 3);
-            if (devPin > 0) {
-              pinMode(devPin, OUTPUT);
-              digitalWrite(devPin, (text[0] == '1') ? HIGH : LOW);
-              addDmesg(F("GPIO toggled via echo"));
-            }
-          }
           found = 1;
           break;
         }
@@ -799,6 +779,20 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     }
   }
   else if (strcmp_P(cmd, PSTR("cat")) == 0) {
+
+    if (strcmp(currentPath, "/dev/") == 0) {
+      if (strcmp_P(args, PSTR("null")) == 0) {
+        return; 
+      } else if (strcmp_P(args, PSTR("led")) == 0) {
+        kprintln(digitalRead(LED_BUILTIN) ? "1" : "0");
+        return;
+      } else if (args[0] == 'a' && args[1] >= '0' && args[1] <= '5') {
+        int aPin = args[1] - '0';
+        kprintln(analogRead(aPin));
+        return;
+      }
+    }
+
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
       if ((vfs[j].flags & FLAG_ACTIVE) && !(vfs[j].flags & FLAG_ISDIR) &&
@@ -812,6 +806,12 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     if (!found) Serial.println(F("File not found."));
   }
   else if (strcmp_P(cmd, PSTR("info")) == 0) {
+    if (strcmp(currentPath, "/dev/") == 0 && (strcmp_P(args, PSTR("null")) == 0 || strcmp_P(args, PSTR("led")) == 0 || (args[0] == 'a' && args[1] >= '0'))) {
+      kprint(F("Name: ")); kprintln(args);
+      kprintln(F("Type: Virtual Device"));
+      kprintln(F("Size: 0 (Stream)"));
+      return;
+    }
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
       if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(args, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
@@ -979,12 +979,12 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
         addDmesg(F("System hard locked!"));
       } else {
         addDmesg(F("Login failed!"));
-
-        unsigned long delayMs = 1000UL << loginFailCount; 
-        if (delayMs > 30000) delayMs = 30000;  
+        lastLoginAttempt = millis();
+        loginCooldown = 1000UL << loginFailCount; 
+        if (loginCooldown > 30000) loginCooldown = 30000;  
+        
         kprint(F("Access Denied. Attempts: ")); kprint(loginFailCount);
-        kprint(F(" Delay: ")); kprint(delayMs / 1000); kprintln(F("s"));
-        delay(delayMs); 
+        kprint(F(" Cooldown: ")); kprint(loginCooldown / 1000); kprintln(F("s"));
       }
     }
   }
@@ -1001,10 +1001,10 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     char hashedPass[10];
     char salt[PASS_SALT_LEN + 1];
     
-   
+ 
+    unsigned long entropy = micros() ^ analogRead(A0);
     for (int i = 0; i < PASS_SALT_LEN; i++) {
-      salt[i] = 'a' + (analogRead(A0) % 26); 
-      delay(1);  
+      salt[i] = 'a' + ((entropy >> (i * 4)) % 26); 
     }
     salt[PASS_SALT_LEN] = '\0';
 
@@ -1015,7 +1015,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     EEPROM.commit();
 #endif
     needsSetup = false;
-    kprintln(F("Password secured with salt and hashed in EEPROM."));
+    kprintln(F("Password secured with high-entropy salt and XOR-Hash."));
     addDmesg(F("Root password changed"));
   }
   else if (strcmp_P(cmd, PSTR("telnet")) == 0) {
@@ -1061,8 +1061,11 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       if (httpCode == HTTP_CODE_OK) {
         WiFiClient* stream = http.getStreamPtr();
         int found = -1;
+     
         for (int j = 0; j < MAX_FILES; j++) {
-           if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, file) == 0) { found = j; break; }
+           if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, file) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) { 
+             found = j; break; 
+           }
            if (!(vfs[j].flags & FLAG_ACTIVE) && found == -1) found = j;
         }
         if (found != -1) {
@@ -1209,8 +1212,9 @@ ICACHE_FLASH_ATTR void runScript(const char* content) {
   }
   shellDepth++;
   
-  char line[64];
+  char line[80]; 
   int ci = 0, li = 0, lineNum = 0;
+  bool truncated = false;
   int len = strlen(content);
 
   while (ci <= len) {
@@ -1226,9 +1230,14 @@ ICACHE_FLASH_ATTR void runScript(const char* content) {
         li = 0;
       }
     } else {
-      if (li < 63) line[li++] = c;
+      if (li < 79) {
+        line[li++] = c;
+      } else {
+        truncated = true;
+      }
     }
   }
+  if (truncated) addDmesg(F("sh: warning lines truncated"));
   shellDepth--;
   addDmesg(F("sh: script done"));
   Serial.println(F("[sh] done."));
