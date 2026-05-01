@@ -45,6 +45,17 @@ typedef struct {
   char message[DMESG_LEN];
 } DmesgEntry;
 
+typedef struct {
+  void (*func)(void);
+  unsigned long interval;
+  unsigned long lastRun;
+  bool active;
+  char name[NAME_LEN];
+} Task;
+
+#define MAX_TASKS 4
+Task taskTable[MAX_TASKS];
+
 RAMFile vfs[MAX_FILES];
 char currentPath[PATH_LEN] = "/";
 char inputBuffer[48] = "";
@@ -342,6 +353,12 @@ ICACHE_FLASH_ATTR void setup() {
   telnetServer.begin(); 
   addDmesg(F("Secure Boot Complete"));
 #endif
+  
+
+  for (int t = 0; t < MAX_TASKS; t++) {
+    taskTable[t].active = false;
+  }
+
   delay(500);
   Serial.println(F("--- KernelUNO v1.5 (WiFi/Advanced) ---"));
   Serial.println(F("Type 'help' for commands"));
@@ -349,6 +366,15 @@ ICACHE_FLASH_ATTR void setup() {
 }
 
 void loop() {
+
+  unsigned long now = millis();
+  for (int t = 0; t < MAX_TASKS; t++) {
+    if (taskTable[t].active && (now - taskTable[t].lastRun >= taskTable[t].interval)) {
+      taskTable[t].lastRun = now;
+      taskTable[t].func();
+    }
+  }
+
   if (isLockedOut) { delay(1000); return; } 
 
 
@@ -721,7 +747,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       strncpy(currentPath, "/", PATH_LEN - 1);
       currentPath[PATH_LEN - 1] = '\0';
     } else {
-      // Improved CD: Support leading '/' and relative paths
+   
       char* target = (args[0] == '/') ? (args + 1) : args;
       const char* searchPath = (args[0] == '/') ? "/" : currentPath;
       
@@ -1028,11 +1054,47 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     }
   }
   else if (strcmp_P(cmd, PSTR("ps")) == 0) {
-    kprintln(F("PID  NAME      STATUS"));
-    kprintln(F("0    kernel    RUNNING"));
-    kprintln(F("1    shell     ACTIVE"));
+    kprintln(F("PID  NAME      INTERVAL  STATUS"));
+    kprintln(F("0    kernel    0         RUNNING"));
+    for (int t = 0; t < MAX_TASKS; t++) {
+      if (taskTable[t].active) {
+        kprint(t + 1); kprint(F("    "));
+        kprint(taskTable[t].name); kprint(F("    "));
+        kprint(taskTable[t].interval); kprint(F("      "));
+        kprintln(F("ACTIVE"));
+      }
+    }
     kprint(F("Free Heap: ")); kprintln(freeMemory());
-
+  }
+  else if (strcmp_P(cmd, PSTR("kill")) == 0) {
+    int pid = atoi_safe(args);
+    if (pid > 0 && pid <= MAX_TASKS) {
+      taskTable[pid - 1].active = false;
+      kprint(F("Process ")); kprint(pid); kprintln(F(" killed."));
+    } else {
+      kprintln(F("Usage: kill [pid 1-4]"));
+    }
+  }
+  else if (strcmp_P(cmd, PSTR("bg")) == 0) {
+    if (strcmp_P(args, PSTR("blink")) == 0) {
+      int found = -1;
+      for (int t = 0; t < MAX_TASKS; t++) {
+        if (!taskTable[t].active) { found = t; break; }
+      }
+      if (found != -1) {
+        extern void taskBlink(void);
+        taskTable[found].func = taskBlink;
+        taskTable[found].interval = 500;
+        taskTable[found].lastRun = millis();
+        taskTable[found].active = true;
+        strncpy(taskTable[found].name, "blinker", NAME_LEN - 1);
+        kprintln(F("Blinker started in background."));
+      } else {
+        kprintln(F("Task table full."));
+      }
+    } else {
+      kprintln(F("Usage: bg [blink]"));
+    }
   }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   else if (strcmp_P(cmd, PSTR("ping")) == 0) {
@@ -1241,4 +1303,9 @@ ICACHE_FLASH_ATTR void runScript(const char* content) {
   shellDepth--;
   addDmesg(F("sh: script done"));
   Serial.println(F("[sh] done."));
+}
+void taskBlink() {
+  static bool state = false;
+  state = !state;
+  digitalWrite(LED_BUILTIN, state ? HIGH : LOW);
 }
