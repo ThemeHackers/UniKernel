@@ -129,6 +129,26 @@ ICACHE_FLASH_ATTR void hashPass(const char* input, char* output) {
 }
 
 
+
+ICACHE_FLASH_ATTR bool secureEquals(const char* a, const char* b, size_t len) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < len; i++) {
+    diff |= ((uint8_t)a[i]) ^ ((uint8_t)b[i]);
+  }
+  return diff == 0;
+}
+
+ICACHE_FLASH_ATTR bool isValidFsName(const char* name) {
+  if (name == NULL || name[0] == '\0') return false;
+  size_t n = strlen(name);
+  if (n == 0 || n >= NAME_LEN) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = name[i];
+    if (c == '/' || c == '\\' || c == ' ' || c < 33 || c > 126) return false;
+  }
+  return true;
+}
+
 ICACHE_FLASH_ATTR bool isTimeout(unsigned long lastActivity, unsigned long timeout) {
   unsigned long currentTime = millis();
   return (currentTime - lastActivity) >= timeout;
@@ -728,6 +748,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     kprintln();
   }
   else if (strcmp_P(cmd, PSTR("mkdir")) == 0 || strcmp_P(cmd, PSTR("touch")) == 0) {
+    if (!isValidFsName(args)) { Serial.println(F("Invalid name. Use 1-9 printable chars without / or spaces.")); return; }
     int foundSlot = -1, j;
     for (j = 0; j < MAX_FILES; j++) {
       if (!(vfs[j].flags & FLAG_ACTIVE)) { foundSlot = j; break; }
@@ -981,7 +1002,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     EEPROM.get(EEPROM_PASS_ADDR, savedPass);
     hashPass(args, hashedInput);
     
-    if (strcmp(hashedInput, savedPass) == 0) {
+    if (secureEquals(hashedInput, savedPass, 9)) {
       if (fromSerial) {
         serialAuthenticated = true;
         lastSerialActivity = millis();
