@@ -430,7 +430,7 @@ void loop() {
         }
         
         inputLen = 0;
-        memset(inputBuffer, 0, 64);
+        memset(inputBuffer, 0, 48);
         printPrompt();
       } else {
         kprintln();
