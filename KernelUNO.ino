@@ -38,6 +38,8 @@ typedef struct {
   char content[CONTENT_LEN];
   char parentDir[PATH_LEN];
   uint8_t flags;
+  uint16_t mode;
+  uint8_t ownerId;
 } RAMFile;
 
 typedef struct {
@@ -292,6 +294,8 @@ ICACHE_FLASH_ATTR void initFS() {
         vfs[i].name[NAME_LEN - 1] = '\0';
         strncpy(vfs[i].parentDir, "/", PATH_LEN - 1);
         vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
+        vfs[i].mode = 0755;
+        vfs[i].ownerId = 0;
         break;
       }
     }
@@ -573,6 +577,30 @@ ICACHE_FLASH_ATTR int safeConcatPath(char* dest, const char* add) {
 
 void runScript(const char* content);
 
+ICACHE_FLASH_ATTR bool checkPermission(int fileIdx, uint8_t action, bool fromSerial) {
+  bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
+  uint8_t currentUser = currentAuth ? 0 : 1;
+  if (currentUser == 0) return true;
+  uint16_t m = vfs[fileIdx].mode;
+  if (vfs[fileIdx].ownerId == currentUser) return (m >> 6) & action;
+  return m & action;
+}
+
+ICACHE_FLASH_ATTR void printPermissions(uint16_t m, bool isDir) {
+  kprint(isDir ? "d" : "-");
+  const char chars[] = "rwx";
+  for (int i = 6; i >= 0; i -= 3) {
+    for (int j = 2; j >= 0; j--) {
+      if ((m >> (i + j)) & 1) {
+        char tmp[2] = {chars[2 - j], '\0'};
+        kprint(tmp);
+      } else {
+        kprint("-");
+      }
+    }
+  }
+}
+
 ICACHE_FLASH_ATTR bool isTelnetSafeCommand(const char* cmd) {
   if (strcmp_P(cmd, PSTR("ls")) == 0) return true;
   if (strcmp_P(cmd, PSTR("cd")) == 0) return true;
@@ -730,22 +758,58 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
   }
   else if (strcmp_P(cmd, PSTR("ls")) == 0) {
     int empty = 1, j;
+    bool isLong = (strcmp_P(args, PSTR("-l")) == 0);
 
     for (j = 0; j < MAX_FILES; j++) {
       if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].parentDir, currentPath) == 0) {
-        kprint(vfs[j].name);
-        if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
-        kprint(F("  "));
+        if (isLong) {
+          printPermissions(vfs[j].mode, (vfs[j].flags & FLAG_ISDIR));
+          kprint(F(" "));
+          kprint(vfs[j].ownerId == 0 ? "root " : "guest ");
+          kprint(vfs[j].name);
+          if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
+          kprintln();
+        } else {
+          kprint(vfs[j].name);
+          if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
+          kprint(F("  "));
+        }
         empty = 0;
       }
     }
   
     if (strcmp(currentPath, "/dev/") == 0) {
-      kprint(F("null  led  a0  a1  a2  a3  a4  a5  "));
+      if (isLong) kprintln(F("crw-rw-rw- root null\ncrw-rw-rw- root led\ncrw-rw-rw- root a0\ncrw-rw-rw- root a1\ncrw-rw-rw- root a2\ncrw-rw-rw- root a3\ncrw-rw-rw- root a4\ncrw-rw-rw- root a5"));
+      else kprint(F("null  led  a0  a1  a2  a3  a4  a5  "));
       empty = 0;
     }
-    if (empty) kprint(F("(empty)"));
-    kprintln();
+    if (empty && !isLong) kprint(F("(empty)"));
+    if (!isLong) kprintln();
+  }
+  else if (strcmp_P(cmd, PSTR("chmod")) == 0) {
+    char* modeStr = args;
+    char* filename = strchr(args, ' ');
+    if (filename) {
+      *filename = '\0'; filename++;
+      int m = strtol(modeStr, NULL, 8);
+      int j, found = 0;
+      for (j = 0; j < MAX_FILES; j++) {
+        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(filename, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
+          uint8_t currentUser = (fromSerial ? serialAuthenticated : telnetAuthenticated) ? 0 : 1;
+          if (currentUser != 0 && vfs[j].ownerId != currentUser) {
+            Serial.println(F("Permission denied."));
+          } else {
+            vfs[j].mode = m;
+            Serial.println(F("Mode updated."));
+          }
+          found = 1;
+          break;
+        }
+      }
+      if (!found) Serial.println(F("File not found."));
+    } else {
+      Serial.println(F("Usage: chmod [mode] [file]"));
+    }
   }
   else if (strcmp_P(cmd, PSTR("mkdir")) == 0 || strcmp_P(cmd, PSTR("touch")) == 0) {
     if (!isValidFsName(args)) { Serial.println(F("Invalid name. Use 1-9 printable chars without / or spaces.")); return; }
@@ -759,7 +823,13 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     strncpy(vfs[foundSlot].parentDir, currentPath, PATH_LEN - 1);
     vfs[foundSlot].parentDir[PATH_LEN - 1] = '\0';
     vfs[foundSlot].flags = FLAG_ACTIVE;
-    if (strcmp_P(cmd, PSTR("mkdir")) == 0) vfs[foundSlot].flags |= FLAG_ISDIR;
+    if (strcmp_P(cmd, PSTR("mkdir")) == 0) {
+      vfs[foundSlot].flags |= FLAG_ISDIR;
+      vfs[foundSlot].mode = 0755;
+    } else {
+      vfs[foundSlot].mode = 0644;
+    }
+    vfs[foundSlot].ownerId = (fromSerial ? serialAuthenticated : telnetAuthenticated) ? 0 : 1;
     vfs[foundSlot].content[0] = '\0';
     Serial.println(F("OK."));
   }
@@ -813,9 +883,13 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
         if ((vfs[j].flags & FLAG_ACTIVE) && !(vfs[j].flags & FLAG_ISDIR) &&
             strcmp(filename, vfs[j].name) == 0 &&
             strcmp(vfs[j].parentDir, currentPath) == 0) {
-          strncpy(vfs[j].content, text, CONTENT_LEN - 1);
-          vfs[j].content[CONTENT_LEN - 1] = '\0';
-          kprintln(F("Saved."));
+          if (!checkPermission(j, 2, fromSerial)) {
+            kprintln(F("Permission denied."));
+          } else {
+            strncpy(vfs[j].content, text, CONTENT_LEN - 1);
+            vfs[j].content[CONTENT_LEN - 1] = '\0';
+            kprintln(F("Saved."));
+          }
           found = 1;
           break;
         }
@@ -845,7 +919,11 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
       if ((vfs[j].flags & FLAG_ACTIVE) && !(vfs[j].flags & FLAG_ISDIR) &&
           strcmp(args, vfs[j].name) == 0 &&
           strcmp(vfs[j].parentDir, currentPath) == 0) {
-        Serial.println(vfs[j].content);
+        if (!checkPermission(j, 4, fromSerial)) {
+          Serial.println(F("Permission denied."));
+        } else {
+          Serial.println(vfs[j].content);
+        }
         found = 1;
         break;
       }
@@ -875,6 +953,11 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
       if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(args, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
+        if (!checkPermission(j, 2, fromSerial)) {
+          Serial.println(F("Permission denied."));
+          found = 1;
+          break;
+        }
         if (vfs[j].flags & FLAG_ISDIR) {
           char dirPath[PATH_LEN];
           snprintf_P(dirPath, PATH_LEN, PSTR("%s%s/"), currentPath, args);
@@ -965,8 +1048,12 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
           strcmp(args, vfs[j].name) == 0 &&
           strcmp(vfs[j].parentDir, currentPath) == 0) {
         found = 1;
-        addDmesg(F("sh: running script"));
-        runScript(vfs[j].content);
+        if (!checkPermission(j, 1, fromSerial)) {
+          Serial.println(F("Permission denied."));
+        } else {
+          addDmesg(F("sh: running script"));
+          runScript(vfs[j].content);
+        }
         break;
       }
     }
@@ -1152,16 +1239,25 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
            if (!(vfs[j].flags & FLAG_ACTIVE) && found == -1) found = j;
         }
         if (found != -1) {
-          strncpy(vfs[found].name, file, NAME_LEN-1);
-          vfs[found].name[NAME_LEN-1] = '\0';
-          int bytesRead = 0;
-          while (stream->available() && bytesRead < CONTENT_LEN - 1) {
-            vfs[found].content[bytesRead] = stream->read();
-            bytesRead++;
+          if ((vfs[found].flags & FLAG_ACTIVE) && !checkPermission(found, 2, fromSerial)) {
+            Serial.println(F("Permission denied."));
+          } else {
+            strncpy(vfs[found].name, file, NAME_LEN-1);
+            vfs[found].name[NAME_LEN-1] = '\0';
+            int bytesRead = 0;
+            while (stream->available() && bytesRead < CONTENT_LEN - 1) {
+              vfs[found].content[bytesRead] = stream->read();
+              bytesRead++;
+            }
+            vfs[found].content[bytesRead] = '\0';
+            if (!(vfs[found].flags & FLAG_ACTIVE)) {
+              vfs[found].flags = FLAG_ACTIVE;
+              vfs[found].mode = 0644;
+              vfs[found].ownerId = (fromSerial ? serialAuthenticated : telnetAuthenticated) ? 0 : 1;
+              strncpy(vfs[found].parentDir, currentPath, PATH_LEN - 1);
+            }
+            Serial.println(F("Saved."));
           }
-          vfs[found].content[bytesRead] = '\0';
-          vfs[found].flags = FLAG_ACTIVE;
-          Serial.println(F("Saved."));
         }
       } else { Serial.print(F("Error: ")); Serial.println(httpCode); }
       http.end();
