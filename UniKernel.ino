@@ -113,7 +113,6 @@ bool telnetAuthenticated = false;
 uint8_t loginFailCount = 0;
 bool isLockedOut = false;
 bool needsSetup = false;
-bool telnetEnabled = false;
 bool webEnabled = false;
 int redirectionFileIdx = -1;
 unsigned long lastSerialActivity = 0;
@@ -221,7 +220,6 @@ WiFiServer telnetServer(23);
 WiFiServerSecure sshServer(22);
 WiFiClient telnetClient;
 WiFiClientSecure sshClient;
-bool telnetEnabled = false;
 bool sshEnabled = false;
 int authFailures = 0;
 unsigned long lockoutEnd = 0;
@@ -530,14 +528,14 @@ ICACHE_FLASH_ATTR void loop() {
       String remoteIP = c.remoteIP().toString();
       if (strlen(whitelistIP) > 0 && remoteIP != whitelistIP) {
         c.println(F("Firewall: IP Blocked"));
-        addDmesg(F("Firewall blocked SSH from: ")); addDmesg(remoteIP.c_str());
+        addDmesg(F("Firewall blocked SSH from: ")); addDmesgRam(remoteIP.c_str());
         c.stop();
       } else if (millis() < lockoutEnd) {
         c.println(F("Access Denied: Lockout Active"));
         c.stop();
       } else {
         sshClient = c;
-        addDmesg(F("SSH connected from: ")); addDmesg(remoteIP.c_str());
+        addDmesg(F("SSH connected from: ")); addDmesgRam(remoteIP.c_str());
         lastActivity = millis();
       }
     }
