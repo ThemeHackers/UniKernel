@@ -11,3 +11,4 @@
 *.swo
 *~
 .DS_Store
+build/

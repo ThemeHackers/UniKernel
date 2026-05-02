@@ -326,7 +326,7 @@ ICACHE_FLASH_ATTR void printPrompt() {
 ICACHE_FLASH_ATTR void setup() {
   Serial.begin(115200);
   delay(500); 
-  Serial.println(F("\n\n[System] Booting KernelUNO..."));
+  Serial.println(F("\n\n[System] Booting UniKernel..."));
   
 
   pinMode(LED_BUILTIN, OUTPUT);
@@ -384,7 +384,7 @@ ICACHE_FLASH_ATTR void setup() {
   }
 
   delay(500);
-  Serial.println(F("--- KernelUNO v1.5 (WiFi/Advanced) ---"));
+  Serial.println(F("--- UniKernel v1.5 (WiFi/Advanced) ---"));
   Serial.println(F("Type 'help' for commands"));
   printPrompt();
 }
@@ -424,7 +424,7 @@ void loop() {
       telnetClient.write(255);
       telnetClient.write(251);
       telnetClient.write(1);
-      telnetClient.println(F("\nWelcome to KernelUNO NetShell"));
+      telnetClient.println(F("\nWelcome to UniKernel NetShell"));
       telnetClient.println(F("Access Denied. Use: login [pass]"));
     } else {
       telnetServer.available().stop();
@@ -1008,7 +1008,7 @@ ICACHE_FLASH_ATTR void executeCommand(char* line, bool fromSerial) {
     kprintln(F("root"));
   }
   else if (strcmp_P(cmd, PSTR("uname")) == 0) {
-    kprintln(F("KernelUNO v1.5"));
+    kprintln(F("UniKernel v1.5"));
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
     kprintln(F("Kernel: ESP8266 RTOS/NonOS"));
     kprintln(F("Hardware: NodeMCU/ESP8266"));
