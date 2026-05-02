@@ -113,6 +113,7 @@ bool telnetAuthenticated = false;
 uint8_t loginFailCount = 0;
 bool isLockedOut = false;
 bool needsSetup = false;
+bool telnetEnabled = false;
 bool webEnabled = false;
 int redirectionFileIdx = -1;
 unsigned long lastSerialActivity = 0;
