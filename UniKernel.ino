@@ -237,8 +237,8 @@ ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
   }
   Serial.print(s);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetClient && telnetClient.connected())
-    telnetClient.print(s);
+  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+  if (sshClient && sshClient.connected()) sshClient.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(const char *s) {
@@ -248,8 +248,8 @@ ICACHE_FLASH_ATTR void kprint(const char *s) {
   }
   Serial.print(s);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetClient && telnetClient.connected())
-    telnetClient.print(s);
+  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+  if (sshClient && sshClient.connected()) sshClient.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(int n) {
@@ -260,8 +260,8 @@ ICACHE_FLASH_ATTR void kprint(int n) {
   }
   Serial.print(n);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetClient && telnetClient.connected())
-    telnetClient.print(n);
+  if (telnetClient && telnetClient.connected()) telnetClient.print(n);
+  if (sshClient && sshClient.connected()) sshClient.print(n);
 #endif
 }
 ICACHE_FLASH_ATTR void kprintln(const __FlashStringHelper *s) {
@@ -285,15 +285,15 @@ ICACHE_FLASH_ATTR void kprintln(unsigned long n) {
   }
   Serial.println(n);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetClient && telnetClient.connected())
-    telnetClient.println(n);
+  if (telnetClient && telnetClient.connected()) telnetClient.println(n);
+  if (sshClient && sshClient.connected()) sshClient.println(n);
 #endif
 }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 ICACHE_FLASH_ATTR void kprintln(IPAddress ip) {
   Serial.println(ip);
-  if (telnetClient && telnetClient.connected())
-    telnetClient.println(ip);
+  if (telnetClient && telnetClient.connected()) telnetClient.println(ip);
+  if (sshClient && sshClient.connected()) sshClient.println(ip);
 }
 #endif
 void kprint(String s) {
@@ -537,6 +537,9 @@ ICACHE_FLASH_ATTR void loop() {
       } else {
         sshClient = c;
         addDmesg(F("SSH connected from: ")); addDmesgRam(remoteIP.c_str());
+        sshClient.println(F("\n--- UniKernel Secure Shell ---"));
+        sshClient.println(F("Access Restricted. Please login."));
+        printPrompt();
         lastActivity = millis();
       }
     }
@@ -612,20 +615,18 @@ ICACHE_FLASH_ATTR void loop() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   else if (telnetEnabled && telnetClient && telnetClient.available() > 0) {
     c = telnetClient.read();
-
-    if (c == 255) {
-      unsigned long startWait = millis();
-      while (telnetClient.available() < 2 && millis() - startWait < 50)
-        yield();
-      if (telnetClient.available() >= 2) {
-        telnetClient.read();
-        telnetClient.read();
-      }
-      return;
+    if (c == 255) { 
+       if (telnetClient.available() >= 2) { telnetClient.read(); telnetClient.read(); }
+       return;
     }
-
     hasInput = true;
     fromSerial = false;
+  }
+  else if (sshEnabled && sshClient && sshClient.available() > 0) {
+    c = sshClient.read();
+    hasInput = true;
+    fromSerial = false;
+    lastTelnetActivity = millis();
   }
 #endif
 
