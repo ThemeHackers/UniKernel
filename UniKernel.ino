@@ -711,6 +711,8 @@ ICACHE_FLASH_ATTR void setup() {
 }
 
 ICACHE_FLASH_ATTR void setupWebServer() {
+  const char * headers[] = {"Host"};
+  webServer.collectHeaders(headers, 1);
   webServer.on("/", []() {
     String html = F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
       "<title>UniKernel | Dashboard</title>"
@@ -733,30 +735,44 @@ ICACHE_FLASH_ATTR void setupWebServer() {
       "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
       "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
       "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3>"
-      "<div style='margin-bottom:15px'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'></div>"
+      "<div style='margin-bottom:15px; display:flex; gap:10px;'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'>"
+      "<button class='btn' onclick='alert(\"Password Saved Locally\")' style='background:#444'>SAVE</button></div>"
       "<div style='display:flex; gap:10px;'>"
-      "<button class='btn' onclick='toggle(2,1)'>LED ON</button><button class='btn' onclick='toggle(2,0)' style='background:#ff4757'>LED OFF</button></div>"
+      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
       "<h3 style='margin-top:20px'>Bluetooth Link</h3><div style='display:flex; gap:10px;'>"
       "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT ENABLE</button><button class='btn' onclick='bt(0)' style='background:#444'>BT DISABLE</button></div></div>"
       "</div><script>"
       "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-      "function toggle(p,v){const pw=document.getElementById('p').value; fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
-      "function bt(v){const pw=document.getElementById('p').value; fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); update();"
+      "function toggle(p,v){const pw=encodeURIComponent(document.getElementById('p').value); fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
+      "function bt(v){const pw=encodeURIComponent(document.getElementById('p').value); fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); update();"
       "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
 
-  auto checkAuth = []() {
+  webServer.on("/api/gpio", []() {
     char otaPass[16];
     EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
     if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
-    if (webServer.arg("pass") == String(otaPass)) return true;
-    webServer.send(401, "text/plain", "Unauthorized. Use ?pass=YOUR_OTA_PASS");
-    return false;
-  };
-
-  webServer.on("/api/gpio", [checkAuth]() {
-    if (!checkAuth()) return;
+    if (webServer.arg("pass") != String(otaPass)) {
+      webServer.send(401, "text/plain", "Unauthorized");
+      return;
+    }
+    
+    String host = webServer.header("Host");
+    bool hostAllowed = false;
+    if (host.length() == 0) hostAllowed = true;
+    else if (host.startsWith("192.168.")) hostAllowed = true;
+    else if (host.startsWith("10.")) hostAllowed = true;
+    else if (host.startsWith("172.")) hostAllowed = true; 
+    else if (host.startsWith("169.254.")) hostAllowed = true;
+    else if (host.startsWith("localhost")) hostAllowed = true;
+    else if (host.startsWith("unikernel")) hostAllowed = true;
+    else if (host.equals(WiFi.localIP().toString())) hostAllowed = true;
+    
+    if (!hostAllowed) {
+       webServer.send(403, "text/plain", "CSRF Protection Triggered");
+       return;
+    }
     int pin = webServer.arg("pin").toInt();
     int val = webServer.arg("val").toInt();
     if (pin >= 0 && pin <= 16) {
@@ -775,8 +791,30 @@ ICACHE_FLASH_ATTR void setupWebServer() {
     webServer.send(200, "application/json", json);
   });
 
-  webServer.on("/api/bt", [checkAuth]() {
-    if (!checkAuth()) return;
+  webServer.on("/api/bt", []() {
+    char otaPass[16];
+    EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
+    if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
+    if (webServer.arg("pass") != String(otaPass)) {
+      webServer.send(401, "text/plain", "Unauthorized");
+      return;
+    }
+    
+    String host = webServer.header("Host");
+    bool hostAllowed = false;
+    if (host.length() == 0) hostAllowed = true;
+    else if (host.startsWith("192.168.")) hostAllowed = true;
+    else if (host.startsWith("10.")) hostAllowed = true;
+    else if (host.startsWith("172.")) hostAllowed = true;
+    else if (host.startsWith("169.254.")) hostAllowed = true;
+    else if (host.startsWith("localhost")) hostAllowed = true;
+    else if (host.startsWith("unikernel")) hostAllowed = true;
+    else if (host.equals(WiFi.localIP().toString())) hostAllowed = true;
+    
+    if (!hostAllowed) {
+       webServer.send(403, "text/plain", "CSRF Protection Triggered");
+       return;
+    }
 #if defined(ESP32)
     int val = webServer.arg("val").toInt();
     if (val == 1) { SerialBT.begin("UniKernel-Web"); btEnabled = true; }
@@ -1155,6 +1193,7 @@ ICACHE_FLASH_ATTR void expandVars(char *line) {
 }
 
 ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial) {
+  expandVars(line); 
   char *p = line;
   char *cmd_start = p;
   bool inQuotes = false;
@@ -1198,7 +1237,6 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 
 ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   kPulse();
-  expandVars(line); 
   
   char *cmd = line;
   char *args = NULL;
