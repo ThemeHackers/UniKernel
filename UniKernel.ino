@@ -711,8 +711,7 @@ ICACHE_FLASH_ATTR void setup() {
 }
 
 ICACHE_FLASH_ATTR void setupWebServer() {
-  const char * headers[] = {"Host"};
-  webServer.collectHeaders(headers, 1);
+  webServer.collectHeaders("Host");
   webServer.on("/", []() {
     String html = F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
       "<title>UniKernel | Dashboard</title>"
