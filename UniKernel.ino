@@ -11,6 +11,15 @@
 #include <WiFiServerSecure.h>
 #include <LittleFS.h>
 #include <ArduinoOTA.h>
+#include <ESP8266mDNS.h>
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#include <WiFi.h>
+#include <WebServer.h>
+#include <HTTPClient.h>
+#include <ESPmDNS.h>
+#include <LittleFS.h>
+#include <ArduinoOTA.h>
+#include <BluetoothSerial.h>
 #endif
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
@@ -103,6 +112,7 @@ typedef struct {
   unsigned long lastRun;
   bool active;
   char name[NAME_LEN];
+  unsigned long executionCount;
 } Task;
 
 Task taskTable[MAX_TASKS];
@@ -135,6 +145,7 @@ bool isLockedOut = false;
 bool needsSetup = false;
 bool telnetEnabled = false;
 bool webEnabled = false;
+bool otaEnabled = false;
 int redirectionFileIdx = -1;
 unsigned long lastSerialActivity = 0;
 unsigned long lastTelnetActivity = 0;
@@ -327,6 +338,18 @@ char whitelistIP[16] = "";
 unsigned long lastActivity = 0;
 #define SESSION_TIMEOUT 300000
 ESP8266WebServer webServer(80);
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+WiFiServer telnetServer(23);
+WiFiClient telnetClient;
+bool sshEnabled = false; 
+int authFailures = 0;
+unsigned long lockoutEnd = 0;
+char whitelistIP[16] = "";
+unsigned long lastActivity = 0;
+#define SESSION_TIMEOUT 300000
+WebServer webServer(80);
+BluetoothSerial SerialBT;
+bool btEnabled = false;
 #endif
 
 ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
@@ -335,9 +358,14 @@ ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
     return;
   }
   Serial.print(s);
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+#endif
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (sshClient && sshClient.connected()) sshClient.print(s);
+#endif
+#if defined(ESP32)
+  if (btEnabled) SerialBT.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(const char *s) {
@@ -346,9 +374,14 @@ ICACHE_FLASH_ATTR void kprint(const char *s) {
     return;
   }
   Serial.print(s);
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+#endif
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (sshClient && sshClient.connected()) sshClient.print(s);
+#endif
+#if defined(ESP32)
+  if (btEnabled) SerialBT.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(int n) {
@@ -358,9 +391,14 @@ ICACHE_FLASH_ATTR void kprint(int n) {
     return;
   }
   Serial.print(n);
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetClient && telnetClient.connected()) telnetClient.print(n);
+#endif
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (sshClient && sshClient.connected()) sshClient.print(n);
+#endif
+#if defined(ESP32)
+  if (btEnabled) SerialBT.print(n);
 #endif
 }
 ICACHE_FLASH_ATTR void kprintln(const __FlashStringHelper *s) {
@@ -432,9 +470,12 @@ void kprint(String s) {
 }
 void kprintln(String s) {
   Serial.println(s);
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetClient && telnetClient.connected())
     telnetClient.println(s);
+#endif
+#if defined(ESP32)
+  if (btEnabled) SerialBT.println(s);
 #endif
 }
 
@@ -610,6 +651,10 @@ ICACHE_FLASH_ATTR void setup() {
   if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "admin123");
   ArduinoOTA.setHostname("UniKernel-Node");
   ArduinoOTA.setPassword(otaPass);
+  ArduinoOTA.onStart([]() { addDmesg(F("OTA: Starting Update")); });
+  ArduinoOTA.onEnd([]() { addDmesg(F("OTA: Update Finished")); });
+  ArduinoOTA.onError([](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
+  MDNS.begin("unikernel");
   
   static const uint8_t rsakey[] = {0x00}; 
   static const uint8_t rsacert[] = {0x00};
@@ -620,6 +665,7 @@ ICACHE_FLASH_ATTR void setup() {
 
   for (int t = 0; t < MAX_TASKS; t++) {
     taskTable[t].active = false;
+    taskTable[t].executionCount = 0;
   }
 
   delay(500);
@@ -675,10 +721,13 @@ ICACHE_FLASH_ATTR void setupWebServer() {
       "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
       "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
       "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3><div style='display:flex; gap:10px;'>"
-      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div></div>"
+      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
+      "<h3 style='margin-top:20px'>Bluetooth Link</h3><div style='display:flex; gap:10px;'>"
+      "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT ENABLE</button><button class='btn' onclick='bt(0)' style='background:#444'>BT DISABLE</button></div></div>"
       "</div><script>"
       "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-      "function toggle(p,v){fetch(`/api/gpio?pin=${p}&val=${v}`);} setInterval(update, 1000); update();"
+      "function toggle(p,v){fetch(`/api/gpio?pin=${p}&val=${v}`);}"
+      "function bt(v){fetch(`/api/bt?val=${v}`);} setInterval(update, 1000); update();"
       "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
@@ -694,8 +743,23 @@ ICACHE_FLASH_ATTR void setupWebServer() {
   });
 
   webServer.on("/api/stats", []() {
-    String json = "{\"free\":" + String(ESP.getFreeHeap()) + ",\"up\":" + String(millis() / 1000) + "}";
+    String json = "{\"free\":" + String(ESP.getFreeHeap()) + ",\"up\":" + String(millis() / 1000);
+#if defined(ESP32)
+    json += ",\"bt\":" + String(btEnabled ? 1 : 0);
+#endif
+    json += "}";
     webServer.send(200, "application/json", json);
+  });
+
+  webServer.on("/api/bt", []() {
+#if defined(ESP32)
+    int val = webServer.arg("val").toInt();
+    if (val == 1) { SerialBT.begin("UniKernel-Web"); btEnabled = true; }
+    else { SerialBT.end(); btEnabled = false; }
+    webServer.send(200, "text/plain", "OK");
+#else
+    webServer.send(400, "text/plain", "Not Supported");
+#endif
   });
   
   webServer.begin();
@@ -704,7 +768,7 @@ ICACHE_FLASH_ATTR void setupWebServer() {
 ICACHE_FLASH_ATTR void loop() {
   if (webEnabled) webServer.handleClient();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetEnabled) ArduinoOTA.handle();
+  if (otaEnabled) { ArduinoOTA.handle(); MDNS.update(); }
   if (sshEnabled) {
     if (sshServer.hasClient()) {
       WiFiClientSecure c = sshServer.available();
@@ -744,6 +808,7 @@ ICACHE_FLASH_ATTR void loop() {
     if (taskTable[t].active &&
         (now - taskTable[t].lastRun >= taskTable[t].interval)) {
       taskTable[t].lastRun = now;
+      taskTable[t].executionCount++;
       taskTable[t].func();
     }
   }
@@ -758,23 +823,24 @@ ICACHE_FLASH_ATTR void loop() {
     Serial.println(F("\nSerial session timeout. Logged out."));
     printPrompt();
   }
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetAuthenticated && isTimeout(lastTelnetActivity, SESSION_TIMEOUT)) {
     telnetAuthenticated = false;
     if (telnetClient && telnetClient.connected()) {
-      telnetClient.println(F("\nTelnet session timeout. Logged out."));
+      telnetClient.println(F("\nTelnet/NetShell session timeout. Logged out."));
     }
   }
 #endif
 
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetEnabled && telnetServer.hasClient()) {
     if (!telnetClient || !telnetClient.connected()) {
       telnetClient = telnetServer.available();
-
+#if defined(ESP8266)
       telnetClient.write(255);
       telnetClient.write(251);
       telnetClient.write(1);
+#endif
       telnetClient.println(F("\nWelcome to UniKernel NetShell"));
       telnetClient.println(F("Access Denied. Use: login [pass]"));
     } else {
@@ -794,7 +860,7 @@ ICACHE_FLASH_ATTR void loop() {
     hasInput = true;
     fromSerial = true;
   }
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   else if (telnetEnabled && telnetClient && telnetClient.available() > 0) {
     c = telnetClient.read();
     if (c == 255) { 
@@ -809,6 +875,14 @@ ICACHE_FLASH_ATTR void loop() {
     hasInput = true;
     fromSerial = false;
     lastTelnetActivity = millis();
+  }
+#endif
+#if defined(ESP32)
+  else if (btEnabled && SerialBT.available() > 0) {
+    c = SerialBT.read();
+    hasInput = true;
+    fromSerial = false; 
+    lastTelnetActivity = millis(); 
   }
 #endif
 
@@ -1349,7 +1423,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         if (isLong) {
           printPermissions(vfs[j].mode, (vfs[j].flags & FLAG_ISDIR));
           kprint(F(" "));
-          kprint(vfs[j].ownerId == 0 ? F("root ") : F("guest "));
+          kprint(vfs[j].ownerId == 0 ? F("root  ") : F("guest "));
+          kprint((unsigned long)strlen(vfs[j].content)); kprint(F(" "));
           if (vfs[j].flags & FLAG_ISDIR) kprintColor(CLR_BLU);
           kprint(vfs[j].name);
           if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
@@ -1715,9 +1790,17 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     addDmesg(F("uptime command"));
   } else if (strcmp_P(cmd, PSTR("df")) == 0 ||
              strcmp_P(cmd, PSTR("free")) == 0) {
-    kprint(F("Free RAM: "));
-    kprint(freeMemory());
-    kprintln(F(" bytes"));
+    kprint(F("RAM  - Free: ")); kprint(freeMemory()); kprintln(F(" bytes"));
+    int usedFiles = 0;
+    for (int j = 0; j < MAX_FILES; j++) if (vfs[j].flags & FLAG_ACTIVE) usedFiles++;
+    kprint(F("VFS  - Used: ")); kprint(usedFiles); kprint(F("/")); kprintln(MAX_FILES);
+    kprint(F("LFS  - Free: ")); 
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+    FSInfo fs_info; LittleFS.info(fs_info);
+    kprint(fs_info.totalBytes - fs_info.usedBytes); kprintln(F(" bytes"));
+#else
+    kprintln(F("N/A"));
+#endif
   } else if (strcmp_P(cmd, PSTR("whoami")) == 0) {
     kprintln(F("root"));
   } else if (strcmp_P(cmd, PSTR("uname")) == 0) {
@@ -1736,9 +1819,13 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprint(F("Sketch Size: ")); kprint((unsigned long)ESP.getSketchSize()); kprintln(F(" bytes"));
     kprint(F("Free Sketch: ")); kprint((unsigned long)ESP.getFreeSketchSpace()); kprintln(F(" bytes"));
     kprint(F("Chip VCC: ")); kprint(ESP.getVcc()); kprintln(F(" mV"));
+    kprint(F("Reset: ")); kprintln(ESP.getResetReason());
     kprint(F("Flash Mode: ")); 
     FlashMode_t mode = ESP.getFlashChipMode();
     kprintln(mode == FM_QIO ? "QIO" : (mode == FM_DIO ? "DIO" : "Other"));
+#if defined(ESP32)
+    kprint(F("Bluetooth: ")); kprintln(btEnabled ? F("Online") : F("Offline"));
+#endif
     kprintColor(CLR_RST);
   } else if (strcmp_P(cmd, PSTR("sleep")) == 0) {
     int sec = atoi_safe(args);
@@ -1826,7 +1913,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   } else if (strcmp_P(cmd, PSTR("help")) == 0) {
     kprintln(F("Files: ls, cd, pwd, mkdir, touch, cat, echo, append, cp, mv, rm, info, save, load, lfs"));
     kprintln(F("Hardw: on, off, gpio, pinmode, write, read, pwm, i2c, sh"));
-    kprintln(F("Net  : wifi, ifconfig, ping, wget, ntp, telnet, web, ssh, ota"));
+    kprintln(F("Net  : wifi, bt, ifconfig, ping, wget, ntp, telnet, web, ssh, ota, netstat"));
     kprintln(F("Sys  : login, logout, ps, top, date, uptime, uname, hwinfo, neofetch, firewall, cpu, sleep, dmesg, free, clear, reboot"));
   } else if (strcmp_P(cmd, PSTR("top")) == 0) {
     for (int i = 0; i < 5; i++) {
@@ -1845,6 +1932,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     }
   } else if (strcmp_P(cmd, PSTR("ota")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
+      otaEnabled = true;
       ArduinoOTA.begin();
       kprintln(F("OTA Enabled. Port: 8266"));
     } else if (strncmp_P(args, PSTR("setpass "), 8) == 0) {
@@ -2081,21 +2169,24 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("NetShell (Telnet) Disabled."));
     }
   } else if (strcmp_P(cmd, PSTR("ps")) == 0) {
-    kprintln(F("PID  NAME      INTERVAL  STATUS"));
-    kprintln(F("0    kernel    0         RUNNING"));
+    kprintln(F("PID  NAME      INTERVAL  COUNT     STATUS"));
+    kprintln(F("0    kernel    0         -         RUNNING"));
     for (int t = 0; t < MAX_TASKS; t++) {
       if (taskTable[t].active) {
-        kprint(t + 1);
-        kprint(F("    "));
-        kprint(taskTable[t].name);
-        kprint(F("    "));
-        kprint(taskTable[t].interval);
-        kprint(F("      "));
+        kprint(t + 1); kprint(F("    "));
+        kprint(taskTable[t].name); kprint(F("    "));
+        kprint(taskTable[t].interval); kprint(F("       "));
+        kprint(taskTable[t].executionCount); kprint(F("         "));
         kprintln(F("ACTIVE"));
       }
     }
-    kprint(F("Free Heap: "));
-    kprintln(freeMemory());
+    kprint(F("Free Heap: ")); kprintln(freeMemory());
+  } else if (strcmp_P(cmd, PSTR("netstat")) == 0) {
+    kprintln(F("Active Services:"));
+    kprint(F("Telnet : ")); kprintln(telnetEnabled ? F("ON (Port 23)") : F("OFF"));
+    kprint(F("Web    : ")); kprintln(webEnabled ? F("ON (Port 80)") : F("OFF"));
+    kprint(F("SSH    : ")); kprintln(sshEnabled ? F("ON (Port 22)") : F("OFF"));
+    kprint(F("OTA    : ")); kprintln(F("ON (Port 8266)"));
   } else if (strcmp_P(cmd, PSTR("kill")) == 0) {
     int pid = atoi_safe(args);
     if (pid > 0 && pid <= MAX_TASKS) {
@@ -2130,7 +2221,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Usage: bg [blink]"));
     }
   }
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   else if (strcmp_P(cmd, PSTR("ping")) == 0) {
     if (!checkWiFi()) return;
     const char *host = (args[0] == '\0') ? "8.8.8.8" : args;
@@ -2273,12 +2364,11 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Usage: wifi [connect/scan/status/reset/off]"));
     }
   } else if (strcmp_P(cmd, PSTR("ifconfig")) == 0) {
-    kprint(F("IP: "));
-    kprintln(WiFi.localIP());
-    kprint(F("GW: "));
-    kprintln(WiFi.gatewayIP());
-    kprint(F("MAC: "));
-    kprintln(WiFi.macAddress());
+    kprint(F("SSID: ")); kprintln(WiFi.SSID());
+    kprint(F("RSSI: ")); kprint(WiFi.RSSI()); kprintln(F(" dBm"));
+    kprint(F("IP:   ")); kprintln(WiFi.localIP());
+    kprint(F("GW:   ")); kprintln(WiFi.gatewayIP());
+    kprint(F("MAC:  ")); kprintln(WiFi.macAddress());
   } else if (strcmp_P(cmd, PSTR("web")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
       int retry = 5;
@@ -2293,6 +2383,41 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       webServer.stop();
       kprintln(F("Web Dashboard Disabled."));
     }
+  } else if (strcmp_P(cmd, PSTR("bt")) == 0) {
+#if defined(ESP32)
+    if (strncmp_P(args, PSTR("on"), 2) == 0) {
+      char name[32] = "UniKernel-BT";
+      if (strlen(args) > 3) {
+        strncpy(name, args + 3, 31);
+        name[31] = '\0';
+      }
+      if (SerialBT.begin(name)) {
+        btEnabled = true;
+        addDmesg(F("Bluetooth enabled"));
+        kprint(F("Bluetooth ON. Name: ")); kprintln(name);
+      } else kprintln(F("Error: BT Init failed."));
+    } else if (strcmp_P(args, PSTR("off")) == 0) {
+      SerialBT.end();
+      btEnabled = false;
+      addDmesg(F("Bluetooth disabled"));
+      kprintln(F("Bluetooth OFF."));
+    } else if (strncmp_P(args, PSTR("write "), 6) == 0) {
+      if (btEnabled) {
+        SerialBT.println(args + 6);
+        kprintln(F("Sent via BT."));
+      } else kprintln(F("Error: BT not enabled."));
+    } else if (strcmp_P(args, PSTR("status")) == 0) {
+      kprint(F("Bluetooth: ")); kprintln(btEnabled ? F("ENABLED") : F("DISABLED"));
+      if (btEnabled) {
+        kprint(F("Device: ")); kprintln(BOARD_NAME);
+        kprint(F("Connected: ")); kprintln(SerialBT.hasClient() ? F("YES") : F("NO"));
+      }
+    } else {
+      kprintln(F("Usage: bt [on (name)/off/write text/status]"));
+    }
+#else
+    kprintln(F("Error: Bluetooth only supported on ESP32."));
+#endif
   }
 #endif
   else if (strcmp_P(cmd, PSTR("save")) == 0) {
