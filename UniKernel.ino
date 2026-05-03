@@ -17,7 +17,7 @@
 #define MAX_FILES 16      
 #define CONTENT_LEN 128    
 #define DMESG_LINES 10     
-#define MAX_INPUT_LEN 96  
+#define MAX_INPUT_LEN 192  
 #define MAX_TASKS 6       
 #else
 #define MAX_FILES 4
@@ -38,6 +38,26 @@
 #include <time.h> 
 extern "C" {
   #include "user_interface.h"
+}
+
+void stripQuotes(char *s) {
+  if (!s) return;
+  char *start = s;
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+  int len = strlen(start);
+  while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' || start[len - 1] == '\r' || start[len - 1] == '\n')) {
+    start[len - 1] = '\0';
+    len--;
+  }
+  if (len > 0 && start[len - 1] == '\"') {
+    start[len - 1] = '\0';
+    len--;
+  }
+  if (len > 0 && start[0] == '\"') {
+    memmove(s, start + 1, len);
+  } else if (start != s) {
+    memmove(s, start, len + 1);
+  }
 }
 #elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #define BOARD_NAME "esp32"
@@ -130,6 +150,9 @@ unsigned long loginCooldown = 0;
 #define EEPROM_SALT_ADDR 530
 #define EEPROM_OTA_PASS_ADDR 550
 
+#define EEPROM_VFS_ADDR 1024
+#define VFS_MAGIC 0x55AA
+
 #define PASS_SALT_LEN 4
 #if !defined(ICACHE_FLASH_ATTR)
 #define ICACHE_FLASH_ATTR
@@ -137,8 +160,84 @@ unsigned long loginCooldown = 0;
 
 #define KERNEL_KEY 0x5A
 
+#if defined(ARDUINO_ARCH_AVR)
+
+void fastPinMode(uint8_t pin, uint8_t mode) {
+  if (pin <= 7) {
+    if (mode == OUTPUT) DDRD |= (1 << pin);
+    else { DDRD &= ~(1 << pin); if (mode == INPUT_PULLUP) PORTD |= (1 << pin); }
+  } else if (pin <= 13) {
+    uint8_t bPin = pin - 8;
+    if (mode == OUTPUT) DDRB |= (1 << bPin);
+    else { DDRB &= ~(1 << bPin); if (mode == INPUT_PULLUP) PORTB |= (1 << bPin); }
+  } else if (pin <= 19) {
+    uint8_t cPin = pin - 14;
+    if (mode == OUTPUT) DDRC |= (1 << cPin);
+    else { DDRC &= ~(1 << cPin); if (mode == INPUT_PULLUP) PORTC |= (1 << cPin); }
+  }
+}
+
+void fastDigitalWrite(uint8_t pin, uint8_t val) {
+  if (pin <= 7) { if (val) PORTD |= (1 << pin); else PORTD &= ~(1 << pin); }
+  else if (pin <= 13) { uint8_t bPin = pin - 8; if (val) PORTB |= (1 << bPin); else PORTB &= ~(1 << bPin); }
+  else if (pin <= 19) { uint8_t cPin = pin - 14; if (val) PORTC |= (1 << cPin); else PORTC &= ~(1 << cPin); }
+}
+
+uint8_t fastDigitalRead(uint8_t pin) {
+  if (pin <= 7) return (PIND & (1 << pin)) ? HIGH : LOW;
+  if (pin <= 13) return (PINB & (1 << (pin - 8))) ? HIGH : LOW;
+  if (pin <= 19) return (PINC & (1 << (pin - 14))) ? HIGH : LOW;
+  return LOW;
+}
+
+
+volatile uint32_t system_ticks = 0;
+ISR(TIMER1_COMPA_vect) {
+  system_ticks++;
+}
+
+void initHeartbeat() {
+  cli(); 
+  TCCR1A = 0; TCCR1B = 0; TCNT1 = 0;
+  OCR1A = 15624; 
+  TCCR1B |= (1 << WGM12);
+  TCCR1B |= (1 << CS12) | (1 << CS10); 
+  TIMSK1 |= (1 << OCIE1A); 
+  sei();
+}
+#else
+
+#if defined(ESP8266)
+
+void fastPinMode(uint8_t pin, uint8_t mode) {
+  
+  pinMode(pin, mode);
+  
+  if (pin > 16) return;
+  if (mode == OUTPUT) GPE |= (1 << pin);
+  else GPE &= ~(1 << pin);
+}
+void fastDigitalWrite(uint8_t pin, uint8_t val) {
+  if (pin > 16) { digitalWrite(pin, val); return; }
+  if (val) GPOS = (1 << pin);
+  else GPOC = (1 << pin);
+}
+uint8_t fastDigitalRead(uint8_t pin) {
+  if (pin > 16) return digitalRead(pin);
+  return (GPI & (1 << pin)) ? HIGH : LOW;
+}
+#elif defined(ESP32)
+
+#define fastPinMode(p, m) pinMode(p, m)
+#define fastDigitalWrite(p, v) digitalWrite(p, v)
+#define fastDigitalRead(p) digitalRead(p)
+#endif
+#endif
+
 
 ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial);
+ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial);
+ICACHE_FLASH_ATTR void kPulse();
 ICACHE_FLASH_ATTR void runScript(const char *content);
 ICACHE_FLASH_ATTR void setupWebServer();
 
@@ -405,20 +504,39 @@ ICACHE_FLASH_ATTR void setup() {
   system_update_cpu_freq(160);
 #endif
   Serial.begin(115200);
-  delay(500);
+  delay(1500); 
+  while(Serial.available()) Serial.read(); 
   Serial.println(F("\n\n[System] Booting UniKernel (160MHz Mode)..."));
+  yield();
 
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  fastDigitalWrite(LED_BUILTIN, LOW);
   delay(100);
-  digitalWrite(LED_BUILTIN, HIGH);
+  fastDigitalWrite(LED_BUILTIN, HIGH);
   delay(100);
-  digitalWrite(LED_BUILTIN, LOW);
+  fastDigitalWrite(LED_BUILTIN, LOW);
   delay(100);
-  digitalWrite(LED_BUILTIN, HIGH);
+  fastDigitalWrite(LED_BUILTIN, HIGH);
 
   initFS();
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.begin(4096);
+#endif
+
+  RAMFile tempVfs[MAX_FILES];
+  uint16_t magic;
+  int addr = EEPROM_VFS_ADDR;
+  EEPROM.get(addr, magic);
+  if (magic == VFS_MAGIC) {
+    EEPROM.get(addr + 2, tempVfs);
+    memcpy(vfs, tempVfs, sizeof(vfs));
+    addDmesg(F("Filesystem restored from EEPROM"));
+  }
+
   Wire.begin();
+#if defined(ARDUINO_ARCH_AVR)
+  initHeartbeat();
+#endif
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   WiFi.mode(WIFI_STA);
   WiFi.setAutoConnect(true);
@@ -427,7 +545,6 @@ ICACHE_FLASH_ATTR void setup() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   ESP.wdtEnable(5000);
 #endif
-  EEPROM.begin(1024);
 
   char check;
   EEPROM.get(EEPROM_PASS_ADDR, check);
@@ -478,15 +595,30 @@ ICACHE_FLASH_ATTR void setup() {
   }
 
   delay(500);
-  executeCommand((char*)"neofetch", true);
+  char bootCmd[12]; 
+  strcpy_P(bootCmd, PSTR("neofetch"));
+  parseAndExecute(bootCmd, true);
   
 
+  int rcIdx = -1;
   for (int i = 0; i < MAX_FILES; i++) {
-    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "rc.local") == 0 && strcmp(vfs[i].parentDir, "/") == 0) {
-      addDmesg(F("Running rc.local..."));
-      runScript(vfs[i].content);
+    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "rc.local") == 0) {
+      rcIdx = i;
       break;
     }
+  }
+  if (rcIdx != -1) {
+    kprintln(F("[System] Initializing Services..."));
+    yield();
+    delay(1000); 
+    kprintln(F("[System] Found rc.local. Booting in 2s..."));
+    delay(2000); 
+    bool oldAuth = serialAuthenticated;
+    serialAuthenticated = true; 
+    runScript(vfs[rcIdx].content);
+    serialAuthenticated = oldAuth; 
+  } else {
+    kprintln(F("[System] No rc.local found. (Create one for auto-start)"));
   }
 
   printPrompt();
@@ -494,10 +626,32 @@ ICACHE_FLASH_ATTR void setup() {
 
 ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.on("/", []() {
-    String html = F("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>UniKernel</title><style>"
-                    "body{background:#0f172a;color:#38bdf8;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}"
-                    "h1{font-size:3rem;font-weight:200;letter-spacing:4px;animation:fade 2s ease-in-out;} @keyframes fade{from{opacity:0;}to{opacity:1;}}"
-                    "</style></head><body><h1>Hello UniKernel</h1></body></html>");
+    String html = F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+      "<title>UniKernel | Dashboard</title>"
+      "<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display=swap' rel='stylesheet'>"
+      "<style>"
+      ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: #00f2ff; --accent: #7000ff; }"
+      "body { background: var(--bg); color: #fff; font-family: 'Outfit', sans-serif; margin: 0; overflow-x: hidden; }"
+      ".glass { background: var(--card); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
+      ".container { max-width: 1000px; margin: 50px auto; padding: 20px; }"
+      "header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }"
+      "h1 { font-weight: 700; font-size: 2.5rem; background: linear-gradient(45deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; }"
+      ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }"
+      ".stats-card { padding: 30px; position: relative; overflow: hidden; }"
+      ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: var(--primary); margin: 10px 0; }"
+      ".btn { padding: 12px 25px; border-radius: 12px; border: none; background: linear-gradient(45deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
+      ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0,242,255,0.4); }"
+      ".status-dot { width: 10px; height: 10px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; }"
+      "</style></head><body>"
+      "<div class='container'><header><h1>UniKernel Core</h1><div><span class='status-dot'></span>SYSTEM ONLINE</div></header>"
+      "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
+      "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
+      "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3><div style='display:flex; gap:10px;'>"
+      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div></div>"
+      "</div><script>"
+      "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
+      "function toggle(p,v){fetch(`/api/gpio?pin=${p}&val=${v}`);} setInterval(update, 1000); update();"
+      "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
 
@@ -515,7 +669,7 @@ ICACHE_FLASH_ATTR void setupWebServer() {
     String json = "{\"free\":" + String(ESP.getFreeHeap()) + ",\"up\":" + String(millis() / 1000) + "}";
     webServer.send(200, "application/json", json);
   });
-
+  
   webServer.begin();
 }
 
@@ -667,7 +821,7 @@ ICACHE_FLASH_ATTR void loop() {
           kprintln(F("System is protected. Please type: login [your_password]"));
           if (needsSetup) kprintln(F("Initial setup: type 'passwd [new_pass]' first via Serial."));
         } else {
-          executeCommand(inputBuffer, fromSerial);
+          parseAndExecute(inputBuffer, fromSerial);
         }
 
         inputLen = 0;
@@ -703,7 +857,6 @@ ICACHE_FLASH_ATTR void loop() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
         ESP.wdtFeed();
 #endif
-
         if (fromSerial) {
           Serial.print(c);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -717,9 +870,17 @@ ICACHE_FLASH_ATTR void loop() {
 #endif
           Serial.print(c);
         }
-
         inputBuffer[inputLen] = c;
         inputLen++;
+      } else {
+        
+        static unsigned long lastWarn = 0;
+        if (millis() - lastWarn > 2000) {
+          kprintln(F("\n[!] Error: Buffer Full! (Max 192 chars)"));
+          printPrompt();
+          kprint(inputBuffer); 
+          lastWarn = millis();
+        }
       }
     }
   }
@@ -864,7 +1025,50 @@ ICACHE_FLASH_ATTR void expandVars(char *line) {
   strcpy(line, temp);
 }
 
+ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial) {
+  char *p = line;
+  char *cmd_start = p;
+  bool inQuotes = false;
+
+  while (*p) {
+    if (*p == '\"') {
+      inQuotes = !inQuotes;
+    } else if (!inQuotes) {
+      if (*p == ';') {
+        *p = '\0';
+        executeCommand(cmd_start, fromSerial);
+        cmd_start = p + 1;
+        while (*cmd_start == ' ') cmd_start++;
+      } else if (p[0] == '&' && p[1] == '&') {
+        *p = '\0';
+        executeCommand(cmd_start, fromSerial);
+        p++; 
+        cmd_start = p + 1;
+        while (*cmd_start == ' ') cmd_start++;
+      }
+    }
+    p++;
+  }
+  if (*cmd_start && *cmd_start != ' ') executeCommand(cmd_start, fromSerial);
+}
+
+ICACHE_FLASH_ATTR void kPulse() {
+  bool state = fastDigitalRead(LED_BUILTIN);
+  fastDigitalWrite(LED_BUILTIN, !state);
+  delay(30);
+  fastDigitalWrite(LED_BUILTIN, state);
+}
+
+ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial);
+
 ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
+  int savedRedir = redirectionFileIdx;
+  executeCommandInternal(line, fromSerial);
+  redirectionFileIdx = savedRedir;
+}
+
+ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
+  kPulse();
   expandVars(line); 
   
   char *redir = strchr(line, '>');
@@ -895,47 +1099,59 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     }
   }
 
+  bool result = true; 
+
   char *cmd = line;
+  while (*cmd && isspace((unsigned char)*cmd)) cmd++; 
+  
   char *args = NULL;
   int i, sp, pin, count;
-
-  for (i = 0; line[i] != '\0'; i++) {
-    if (line[i] == ' ') {
-      line[i] = '\0';
-      args = line + i + 1;
-      break;
+  char *firstSpace = strchr(cmd, ' ');
+  if (firstSpace) {
+    *firstSpace = '\0';
+    args = firstSpace + 1;
+    while (*args && isspace((unsigned char)*args)) args++; 
+  } else {
+    static char emptyArgs[] = "";
+    args = emptyArgs;
+    int cl = strlen(cmd);
+    while (cl > 0 && isspace((unsigned char)cmd[cl-1])) {
+      cmd[cl-1] = '\0';
+      cl--;
     }
   }
 
-  if (args == NULL) {
-    static char emptyArgs[] = "";
-    args = emptyArgs;
-  }
-
-  while (*args == ' ')
-    args++;
-
+  stripQuotes(args);
   toLowercase(cmd);
+  
+  // Debug: See what exactly we are trying to run
+  kprint(F("[Parser] Executing: [")); kprint(cmd); kprintln(F("]"));
 
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
-  if (!fromSerial && !currentAuth && !isTelnetSafeCommand(cmd)) {
-    kprintln(F("Telnet: Command not allowed (Please login for full access)"));
-    return;
+  bool isLogin = (strcmp_P(cmd, PSTR("login")) == 0);
+  bool isHelp = (strcmp_P(cmd, PSTR("help")) == 0);
+  
+  if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 && !isTelnetSafeCommand(cmd)) {
+    if (!fromSerial || !serialAuthenticated) {
+      kprintln(F("--- ACCESS DENIED ---"));
+      kprintln(F("System is protected. Please type: login [your_password]"));
+      return;
+    }
   }
 
   if (strcmp_P(cmd, PSTR("on")) == 0) {
     pin = atoi_safe(args);
     if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin 0-19")); return; }
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, HIGH);
+    fastPinMode(pin, OUTPUT);
+    fastDigitalWrite(pin, HIGH);
     kprint(F("Pin ")); kprint(pin); kprintln(F(" is now HIGH (ON)"));
     return;
   }
   else if (strcmp_P(cmd, PSTR("off")) == 0) {
     pin = atoi_safe(args);
     if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin 0-19")); return; }
-    pinMode(pin, OUTPUT);
-    digitalWrite(pin, LOW);
+    fastPinMode(pin, OUTPUT);
+    fastDigitalWrite(pin, LOW);
     kprint(F("Pin ")); kprint(pin); kprintln(F(" is now LOW (OFF)"));
     return;
   }
@@ -1258,12 +1474,24 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     }
   } else if (strcmp_P(cmd, PSTR("pwd")) == 0) {
     kprintln(currentPath);
+  } else if (strcmp_P(cmd, PSTR("sh")) == 0) {
+    int j, found = 0;
+    for (j = 0; j < MAX_FILES; j++) {
+      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(args, vfs[j].name) == 0 &&
+          strcmp(vfs[j].parentDir, currentPath) == 0) {
+        runScript(vfs[j].content);
+        found = 1;
+        break;
+      }
+    }
+    if (!found) kprintln(F("Script not found."));
   } else if (strcmp_P(cmd, PSTR("echo")) == 0) {
     int arrow = indexOf(args, " > ");
     if (arrow != -1) {
       args[arrow] = '\0';
       char *text = args;
       char *filename = args + arrow + 3;
+      while (*filename == ' ') filename++;
 
       if (strcmp(currentPath, "/dev/") == 0) {
         if (strcmp_P(filename, PSTR("led")) == 0) {
@@ -1329,6 +1557,13 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     if (!found)
       kprintln(F("File not found."));
   } else if (strcmp_P(cmd, PSTR("info")) == 0) {
+    if (args[0] == '\0') {
+       kprintln(F("UniKernel OS v6.14.0"));
+       kprint(F("RAM Free: ")); kprintln(freeMemory());
+       kprintln(F("Automation: Use 'rc.local' for auto-start scripts."));
+       kprintln(F("Example: echo \"telnet on\" > rc.local"));
+       return;
+    }
     if (strcmp(currentPath, "/dev/") == 0 &&
         (strcmp_P(args, PSTR("null")) == 0 ||
          strcmp_P(args, PSTR("led")) == 0 ||
@@ -1386,6 +1621,9 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     char *text = strchr(args, ' ');
     if (text) {
       *text = '\0'; text++;
+      while (*text == ' ') text++;
+
+     
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
         if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(file, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
@@ -1451,6 +1689,9 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     kprint(F("m "));
     kprint(sec);
     kprintln(F("s"));
+#if defined(ARDUINO_ARCH_AVR)
+    kprint(F("Bare-Metal Ticks: ")); kprintln((unsigned long)system_ticks);
+#endif
     addDmesg(F("uptime command"));
   } else if (strcmp_P(cmd, PSTR("df")) == 0 ||
              strcmp_P(cmd, PSTR("free")) == 0) {
@@ -1488,6 +1729,9 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     delay(sec * 1000);
     WiFi.mode(WIFI_STA); WiFi.begin();
     kprintln(F("Woke up."));
+  } else if (strcmp_P(cmd, PSTR("delay")) == 0) {
+    int ms = atoi_safe(args);
+    if (ms > 0) delay(ms);
   } else if (strcmp_P(cmd, PSTR("cpu")) == 0) {
     int freq = atoi_safe(args);
     if (freq == 80 || freq == 160) {
@@ -1607,11 +1851,10 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     }
   } else if (strcmp_P(cmd, PSTR("ssh")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
-      if (!checkWiFi()) return;
       sshEnabled = true;
       sshServer.begin();
       kprintln(F("SSH Server (Encrypted) Enabled on Port 22."));
-    } else {
+    } else if (strcmp_P(args, PSTR("off")) == 0) {
       sshEnabled = false;
       sshServer.stop();
       kprintln(F("SSH Server Disabled."));
@@ -1800,7 +2043,10 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     addDmesg(F("Root password changed"));
   } else if (strcmp_P(cmd, PSTR("telnet")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
+      int retry = 5;
+      while (WiFi.status() != WL_CONNECTED && retry > 0) { delay(1000); retry--; yield(); }
       telnetEnabled = true;
+      telnetServer.begin();
       kprintln(F("NetShell (Telnet) Enabled."));
       kprint(F("Listening on: ")); 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
@@ -1808,8 +2054,10 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 #else
       kprintln(F("Serial only (No WiFi)"));
 #endif
-    } else {
+    } else if (strcmp_P(args, PSTR("off")) == 0) {
       telnetEnabled = false;
+      if (telnetClient) telnetClient.stop();
+      telnetServer.stop();
       kprintln(F("NetShell (Telnet) Disabled."));
     }
   } else if (strcmp_P(cmd, PSTR("ps")) == 0) {
@@ -2013,27 +2261,39 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     kprintln(WiFi.macAddress());
   } else if (strcmp_P(cmd, PSTR("web")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
-      if (!checkWiFi()) return;
+      int retry = 5;
+      while (WiFi.status() != WL_CONNECTED && retry > 0) { delay(1000); retry--; yield(); }
+      if (WiFi.status() != WL_CONNECTED) { kprintln(F("Web: Waiting for WiFi...")); }
       webEnabled = true;
+      setupWebServer(); 
       kprintln(F("Web Dashboard Enabled."));
       kprint(F("URL: http://")); kprintln(WiFi.localIP());
-    } else {
+    } else if (strcmp_P(args, PSTR("off")) == 0) {
       webEnabled = false;
+      webServer.stop();
       kprintln(F("Web Dashboard Disabled."));
     }
   }
 #endif
   else if (strcmp_P(cmd, PSTR("save")) == 0) {
-    int addr = 0;
-    EEPROM.put(addr, vfs);
+    int addr = EEPROM_VFS_ADDR;
+    uint16_t magic = VFS_MAGIC;
+    EEPROM.put(addr, magic);
+    EEPROM.put(addr + 2, vfs);
 #if defined(ESP8266) || defined(ESP32)
     EEPROM.commit();
 #endif
     kprintln(F("FS saved to EEPROM."));
   } else if (strcmp_P(cmd, PSTR("load")) == 0) {
-    int addr = 0;
-    EEPROM.get(addr, vfs);
-    kprintln(F("FS loaded from EEPROM."));
+    int addr = EEPROM_VFS_ADDR;
+    uint16_t magic;
+    EEPROM.get(addr, magic);
+    if (magic == VFS_MAGIC) {
+      EEPROM.get(addr + 2, vfs);
+      kprintln(F("FS loaded from EEPROM."));
+    } else {
+      kprintln(F("Error: No valid FS."));
+    }
   } else if (strcmp_P(cmd, PSTR("i2c")) == 0) {
     if (strcmp_P(args, PSTR("scan")) == 0) {
       kprintln(F("Scanning I2C..."));
@@ -2070,12 +2330,26 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
     } else {
       kprint(F("Local Date: ")); kprintln(ctime(&now));
     }
+  } else if (strcmp_P(cmd, PSTR("sleep")) == 0 || strcmp_P(cmd, PSTR("delay")) == 0) {
+    int ms = atoi_safe(args);
+    if (ms <= 0) ms = 1000;
+    delay(ms);
+  } else if (strcmp_P(cmd, PSTR("waitwifi")) == 0) {
+    kprintln(F("System: Waiting for IP address..."));
+    int timeout = 30; // Max 30 seconds
+    while (WiFi.status() != WL_CONNECTED && timeout > 0) {
+      delay(1000);
+      kprint(F("."));
+      timeout--;
+      yield();
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      kprint(F("\n[OK] IP Obtained: ")); kprintln(WiFi.localIP());
+    } else {
+      kprintln(F("\n[ERROR] WiFi Connection Failed."));
+    }
   } else {
     kprintln(F("Unknown command."));
-  }
-
-  if (savedRedirIdx != -1 || redir != NULL) { 
-    redirectionFileIdx = savedRedirIdx;
   }
 }
 
@@ -2085,29 +2359,33 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     return;
   }
   shellDepth++;
-
-  char line[MAX_INPUT_LEN];
+  static char scriptLine[MAX_INPUT_LEN]; 
   int ci = 0, li = 0, lineNum = 0;
   bool truncated = false;
   int len = strlen(content);
+  kprint(F("[sh] Content: ")); kprintln(content);
 
   while (ci <= len) {
-    char c = (ci < len) ? content[ci] : ';';
+    char c = (ci < len) ? content[ci] : '\0';
     ci++;
     if (c == ';' || c == '\n' || c == '\r') {
       if (li > 0) {
-        line[li] = '\0';
+        scriptLine[li] = '\0';
         lineNum++;
         kprint(F("[sh:"));
         kprint(lineNum);
         kprint(F("] "));
-        kprintln(line);
-        executeCommand(line, true);
+        kprintln(scriptLine);
+        
+        parseAndExecute(scriptLine, true);
+        
         li = 0;
+        delay(100); 
+        yield();
       }
     } else {
       if (li < MAX_INPUT_LEN - 1) {
-        line[li++] = c;
+        scriptLine[li++] = c;
       } else {
         truncated = true;
       }
@@ -2122,5 +2400,5 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
 ICACHE_FLASH_ATTR void taskBlink() {
   static bool state = false;
   state = !state;
-  digitalWrite(LED_BUILTIN, state ? HIGH : LOW);
+  fastDigitalWrite(LED_BUILTIN, state ? HIGH : LOW);
 }
