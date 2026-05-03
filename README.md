@@ -101,7 +101,7 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 
 ## 2. Security and Access Protocols
 
-*   **Default OTA Password:** `admin123` (Change immediately via `ota setpass`).
+*   **Default OTA Password:** `unikernel` (Change immediately via `ota setpass`).
 *   **Authentication:** Sensitive commands require root privileges via `login`.
 *   **Firewall:** Use `firewall allow [Your_PC_IP]` to block unauthorized users.
 *   **Session Security:** Automatic logout occurs after 5 minutes of inactivity.

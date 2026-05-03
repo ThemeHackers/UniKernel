@@ -160,6 +160,7 @@ unsigned long loginCooldown = 0;
 #define EEPROM_LOCKOUT_ADDR 522
 #define EEPROM_SALT_ADDR 530
 #define EEPROM_OTA_PASS_ADDR 550
+#define EEPROM_FAIL_COUNT_ADDR 566
 
 #define EEPROM_VFS_ADDR 1024
 #define VFS_MAGIC 0x55AA
@@ -623,12 +624,12 @@ ICACHE_FLASH_ATTR void setup() {
     addDmesg(F("Security Setup Required"));
   }
 
-  unsigned long lockoutTime;
-  EEPROM.get(EEPROM_LOCKOUT_ADDR, lockoutTime);
-  unsigned long currentTime = millis();
-  if (lockoutTime > 0 && ((currentTime - lockoutTime) < LOCKOUT_DURATION)) {
+  uint8_t storedFails;
+  EEPROM.get(EEPROM_FAIL_COUNT_ADDR, storedFails);
+  if (storedFails != 0xFF) loginFailCount = storedFails;
+  if (loginFailCount >= MAX_FAIL_COUNT) {
     isLockedOut = true;
-    addDmesg(F("System locked from previous session"));
+    addDmesg(F("System remains locked (Max Fails)"));
   } else {
     EEPROM.put(EEPROM_LOCKOUT_ADDR, (unsigned long)0);
 #if defined(ESP8266) || defined(ESP32)
@@ -648,7 +649,7 @@ ICACHE_FLASH_ATTR void setup() {
   LittleFS.begin();
   char otaPass[16];
   EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-  if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "admin123");
+  if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
   ArduinoOTA.setHostname("UniKernel-Node");
   ArduinoOTA.setPassword(otaPass);
   ArduinoOTA.onStart([]() { addDmesg(F("OTA: Starting Update")); });
@@ -656,8 +657,19 @@ ICACHE_FLASH_ATTR void setup() {
   ArduinoOTA.onError([](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
   MDNS.begin("unikernel");
   
-  static const uint8_t rsakey[] = {0x00}; 
-  static const uint8_t rsacert[] = {0x00};
+  static const uint8_t rsakey[] = {
+    0x30, 0x82, 0x01, 0x3a, 0x02, 0x01, 0x00, 0x02, 0x41, 0x00, 0xcb, 0x33, 0xe4, 0x0e, 0x56, 0x1d,
+    0x40, 0xab, 0x1e, 0x5a, 0x1d, 0x41, 0x3e, 0x6e, 0xf6, 0x76, 0x0d, 0x98, 0x6b, 0x82, 0x18, 0x77,
+    0x39, 0xf9, 0x7d, 0x0f, 0x3d, 0x15, 0x31, 0x93, 0xf4, 0x46, 0xc2, 0x15, 0x6e, 0xc1, 0x43, 0xd0,
+    0x8b, 0xa1, 0x6e, 0xf4, 0x69, 0x77, 0x87, 0x16, 0x95, 0x3c, 0x6b, 0x18, 0x48, 0x7d, 0x1f, 0x58,
+    0x4a, 0x6d, 0x7d, 0x1a, 0xcb, 0x02, 0x03, 0x01, 0x00, 0x01
+  }; 
+  static const uint8_t rsacert[] = {
+    0x30, 0x82, 0x01, 0x31, 0x30, 0x81, 0xd8, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01, 0x30,
+    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x11,
+    0x31, 0x0f, 0x30, 0x0d, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x06, 0x4b, 0x65, 0x72, 0x6e, 0x65,
+    0x6c
+  };
   sshServer.setRSACert(new BearSSL::X509List(rsacert, sizeof(rsacert)), new BearSSL::PrivateKey(rsakey, sizeof(rsakey)));
 
   addDmesg(F("Secure Boot Complete"));
@@ -720,19 +732,31 @@ ICACHE_FLASH_ATTR void setupWebServer() {
       "<div class='container'><header><h1>UniKernel Core</h1><div><span class='status-dot'></span>SYSTEM ONLINE</div></header>"
       "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
       "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
-      "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3><div style='display:flex; gap:10px;'>"
-      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
+      "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3>"
+      "<div style='margin-bottom:15px'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'></div>"
+      "<div style='display:flex; gap:10px;'>"
+      "<button class='btn' onclick='toggle(2,1)'>LED ON</button><button class='btn' onclick='toggle(2,0)' style='background:#ff4757'>LED OFF</button></div>"
       "<h3 style='margin-top:20px'>Bluetooth Link</h3><div style='display:flex; gap:10px;'>"
       "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT ENABLE</button><button class='btn' onclick='bt(0)' style='background:#444'>BT DISABLE</button></div></div>"
       "</div><script>"
       "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-      "function toggle(p,v){fetch(`/api/gpio?pin=${p}&val=${v}`);}"
-      "function bt(v){fetch(`/api/bt?val=${v}`);} setInterval(update, 1000); update();"
+      "function toggle(p,v){const pw=document.getElementById('p').value; fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
+      "function bt(v){const pw=document.getElementById('p').value; fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); update();"
       "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
 
-  webServer.on("/api/gpio", []() {
+  auto checkAuth = []() {
+    char otaPass[16];
+    EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
+    if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
+    if (webServer.arg("pass") == String(otaPass)) return true;
+    webServer.send(401, "text/plain", "Unauthorized. Use ?pass=YOUR_OTA_PASS");
+    return false;
+  };
+
+  webServer.on("/api/gpio", [checkAuth]() {
+    if (!checkAuth()) return;
     int pin = webServer.arg("pin").toInt();
     int val = webServer.arg("val").toInt();
     if (pin >= 0 && pin <= 16) {
@@ -751,7 +775,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
     webServer.send(200, "application/json", json);
   });
 
-  webServer.on("/api/bt", []() {
+  webServer.on("/api/bt", [checkAuth]() {
+    if (!checkAuth()) return;
 #if defined(ESP32)
     int val = webServer.arg("val").toInt();
     if (val == 1) { SerialBT.begin("UniKernel-Web"); btEnabled = true; }
@@ -834,8 +859,14 @@ ICACHE_FLASH_ATTR void loop() {
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   if (telnetEnabled && telnetServer.hasClient()) {
-    if (!telnetClient || !telnetClient.connected()) {
-      telnetClient = telnetServer.available();
+    WiFiClient c = telnetServer.available();
+    String remoteIP = c.remoteIP().toString();
+    if (strlen(whitelistIP) > 0 && remoteIP != whitelistIP) {
+      c.println(F("Firewall: IP Blocked"));
+      addDmesg(F("Firewall blocked Telnet from: ")); addDmesgRam(remoteIP.c_str());
+      c.stop();
+    } else if (!telnetClient || !telnetClient.connected()) {
+      telnetClient = c;
 #if defined(ESP8266)
       telnetClient.write(255);
       telnetClient.write(251);
@@ -844,7 +875,7 @@ ICACHE_FLASH_ATTR void loop() {
       telnetClient.println(F("\nWelcome to UniKernel NetShell"));
       telnetClient.println(F("Access Denied. Use: login [pass]"));
     } else {
-      telnetServer.available().stop();
+      c.stop();
     }
   }
 #endif
@@ -1096,10 +1127,6 @@ ICACHE_FLASH_ATTR bool isTelnetSafeCommand(const char *cmd) {
   if (strcmp_P(cmd, PSTR("ping")) == 0)
     return true;
   if (strcmp_P(cmd, PSTR("ifconfig")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("wifi")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("on")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("off")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("gpio")) == 0) return true;
   if (strcmp_P(cmd, PSTR("login")) == 0) return true;
   if (strcmp_P(cmd, PSTR("logout")) == 0) return true;
   return false;
@@ -1173,39 +1200,12 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   kPulse();
   expandVars(line); 
   
-  char *redir = strchr(line, '>');
-  int savedRedirIdx = -1;
-  if (redir) {
-    *redir = '\0';
-    char *filename = redir + 1;
-    while (*filename == ' ') filename++;
-    
-
-    int found = -1, empty = -1;
-    for (int j = 0; j < MAX_FILES; j++) {
-      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) { found = j; break; }
-      if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1) empty = j;
-    }
-    int target = (found != -1) ? found : empty;
-    if (target != -1) {
-      if (found == -1) {
-        strncpy(vfs[target].name, filename, NAME_LEN - 1);
-        vfs[target].flags = FLAG_ACTIVE;
-        vfs[target].mode = 0644;
-        vfs[target].ownerId = 0;
-        strncpy(vfs[target].parentDir, currentPath, PATH_LEN - 1);
-      }
-      memset(vfs[target].content, 0, CONTENT_LEN);
-      savedRedirIdx = redirectionFileIdx;
-      redirectionFileIdx = target;
-    }
-  }
-
-  bool result = true; 
-
   char *cmd = line;
   char *args = NULL;
   int i, sp, pin, count;
+
+  char *redir = strchr(line, '>');
+  if (redir) *redir = '\0'; 
 
   char *firstSpace = strchr(cmd, ' ');
   if (firstSpace) {
@@ -1230,6 +1230,45 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("--- ACCESS DENIED ---"));
       kprintln(F("System is protected. Please type: login [your_password]"));
       return;
+    }
+  }
+
+  if (!currentAuth && shellDepth == 0) {
+    if (strchr(args, ';') || strchr(args, '&') || strchr(args, '|') || strchr(args, '`')) {
+      kprintln(F("Error: Command injection characters detected. Access Denied."));
+      return;
+    }
+  }
+
+  if (redir) {
+    if (!currentAuth && shellDepth == 0) {
+      kprintln(F("Error: Redirection requires authentication."));
+      return;
+    }
+    char *filename = redir + 1;
+    while (*filename == ' ') filename++;
+    
+    int found = -1, empty = -1;
+    for (int j = 0; j < MAX_FILES; j++) {
+      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) { found = j; break; }
+      if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1) empty = j;
+    }
+    int target = (found != -1) ? found : empty;
+    if (target != -1) {
+      if (found != -1 && !checkPermission(found, 2, fromSerial)) {
+        kprintln(F("Error: Permission denied for target file."));
+        return;
+      }
+      if (found == -1) {
+        if (!isValidFsName(filename)) { kprintln(F("Error: Invalid filename.")); return; }
+        strncpy(vfs[target].name, filename, NAME_LEN - 1);
+        vfs[target].flags = FLAG_ACTIVE;
+        vfs[target].mode = 0644;
+        vfs[target].ownerId = currentAuth ? 0 : 1;
+        strncpy(vfs[target].parentDir, currentPath, PATH_LEN - 1);
+      }
+      memset(vfs[target].content, 0, CONTENT_LEN);
+      redirectionFileIdx = target;
     }
   }
 
@@ -1723,8 +1762,9 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       for (j = 0; j < MAX_FILES; j++) {
         if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(file, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
           int curLen = strlen(vfs[j].content);
-          if (curLen + strlen(text) < CONTENT_LEN - 1) {
-            strcat(vfs[j].content, text);
+          int addLen = strlen(text);
+          if (curLen + addLen < CONTENT_LEN - 1) {
+            strncat(vfs[j].content, text, CONTENT_LEN - curLen - 1);
             kprintln(F("Appended."));
           } else kprintln(F("File full."));
           found = 1; break;
@@ -1802,7 +1842,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprintln(F("N/A"));
 #endif
   } else if (strcmp_P(cmd, PSTR("whoami")) == 0) {
-    kprintln(F("root"));
+    kprintln(currentAuth ? F("root") : F("guest"));
   } else if (strcmp_P(cmd, PSTR("uname")) == 0) {
     kprint(F("UniKernel ("));
     kprint(BOARD_NAME);
@@ -2092,17 +2132,16 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         lastTelnetActivity = millis();
       }
       loginFailCount = 0;
+      EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)0);
+      EEPROM.commit();
       kprintln(F("Login Successful."));
       addDmesg(F("User logged in"));
     } else {
       loginFailCount++;
+      EEPROM.put(EEPROM_FAIL_COUNT_ADDR, loginFailCount);
+      EEPROM.commit();
       if (loginFailCount >= MAX_FAIL_COUNT) {
         isLockedOut = true;
-        unsigned long lockoutTime = millis();
-        EEPROM.put(EEPROM_LOCKOUT_ADDR, lockoutTime);
-#if defined(ESP8266) || defined(ESP32)
-        EEPROM.commit();
-#endif
         kprintln(F("CRITICAL: System Locked due to Brute-Force."));
         addDmesg(F("System hard locked!"));
       } else {
