@@ -366,7 +366,35 @@ ICACHE_FLASH_ATTR void kprint(int n) {
 ICACHE_FLASH_ATTR void kprintln(const __FlashStringHelper *s) {
   kprint(s); kprintln();
 }
-ICACHE_FLASH_ATTR void kprintln(const char *s) {
+ICACHE_FLASH_ATTR 
+void kprint_sys(const char *s) {
+  Serial.print(s);
+  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+}
+void kprint_sys(const String &s) { kprint_sys(s.c_str()); }
+void kprintln_sys(const char *s) { kprint_sys(s); kprint_sys("\n"); }
+void kprintln_sys(const String &s) { kprintln_sys(s.c_str()); }
+void kprintln_sys(const __FlashStringHelper *ifsh) {
+  Serial.println(ifsh);
+  if (telnetClient && telnetClient.connected()) telnetClient.println(ifsh);
+}
+void kprint_sys(const __FlashStringHelper *ifsh) {
+  Serial.print(ifsh);
+  if (telnetClient && telnetClient.connected()) telnetClient.print(ifsh);
+}
+
+
+char* kTrim(char* s) {
+  if (!s) return s;
+  while (isspace((unsigned char)*s)) s++;
+  if (*s == 0) return s;
+  char* end = s + strlen(s) - 1;
+  while (end > s && isspace((unsigned char)*end)) end--;
+  end[1] = '\0';
+  return s;
+}
+
+void kprintln(const char *s) {
   kprint(s); kprintln();
 }
 ICACHE_FLASH_ATTR void kprintln() {
@@ -602,7 +630,7 @@ ICACHE_FLASH_ATTR void setup() {
 
   int rcIdx = -1;
   for (int i = 0; i < MAX_FILES; i++) {
-    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "rc.local") == 0) {
+    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "rc.sh") == 0) {
       rcIdx = i;
       break;
     }
@@ -611,14 +639,14 @@ ICACHE_FLASH_ATTR void setup() {
     kprintln(F("[System] Initializing Services..."));
     yield();
     delay(1000); 
-    kprintln(F("[System] Found rc.local. Booting in 2s..."));
+    kprintln(F("[System] Found rc.sh. Booting in 2s..."));
     delay(2000); 
     bool oldAuth = serialAuthenticated;
     serialAuthenticated = true; 
     runScript(vfs[rcIdx].content);
     serialAuthenticated = oldAuth; 
   } else {
-    kprintln(F("[System] No rc.local found. (Create one for auto-start)"));
+    kprintln(F("[System] No rc.sh found. (Create one for auto-start)"));
   }
 
   printPrompt();
@@ -1102,30 +1130,22 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   bool result = true; 
 
   char *cmd = line;
-  while (*cmd && isspace((unsigned char)*cmd)) cmd++; 
-  
   char *args = NULL;
   int i, sp, pin, count;
+
   char *firstSpace = strchr(cmd, ' ');
   if (firstSpace) {
     *firstSpace = '\0';
     args = firstSpace + 1;
-    while (*args && isspace((unsigned char)*args)) args++; 
   } else {
     static char emptyArgs[] = "";
     args = emptyArgs;
-    int cl = strlen(cmd);
-    while (cl > 0 && isspace((unsigned char)cmd[cl-1])) {
-      cmd[cl-1] = '\0';
-      cl--;
-    }
   }
 
+  cmd = kTrim(cmd);
+  args = kTrim(args);
   stripQuotes(args);
   toLowercase(cmd);
-  
-  // Debug: See what exactly we are trying to run
-  kprint(F("[Parser] Executing: [")); kprint(cmd); kprintln(F("]"));
 
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
   bool isLogin = (strcmp_P(cmd, PSTR("login")) == 0);
@@ -1560,8 +1580,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     if (args[0] == '\0') {
        kprintln(F("UniKernel OS v6.14.0"));
        kprint(F("RAM Free: ")); kprintln(freeMemory());
-       kprintln(F("Automation: Use 'rc.local' for auto-start scripts."));
-       kprintln(F("Example: echo \"telnet on\" > rc.local"));
+       kprintln(F("Automation: Use 'rc.sh' for auto-start scripts."));
+       kprintln(F("Example: echo \"telnet on\" > rc.sh"));
        return;
     }
     if (strcmp(currentPath, "/dev/") == 0 &&
@@ -2336,7 +2356,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     delay(ms);
   } else if (strcmp_P(cmd, PSTR("waitwifi")) == 0) {
     kprintln(F("System: Waiting for IP address..."));
-    int timeout = 30; // Max 30 seconds
+    int timeout = 30;
     while (WiFi.status() != WL_CONNECTED && timeout > 0) {
       delay(1000);
       kprint(F("."));
@@ -2371,14 +2391,13 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     if (c == ';' || c == '\n' || c == '\r') {
       if (li > 0) {
         scriptLine[li] = '\0';
-        lineNum++;
-        kprint(F("[sh:"));
-        kprint(lineNum);
-        kprint(F("] "));
-        kprintln(scriptLine);
-        
-        parseAndExecute(scriptLine, true);
-        
+        char* cleanedLine = kTrim(scriptLine);
+        if (strlen(cleanedLine) > 0) {
+          lineNum++;
+          kprint(F("[sh:")); kprint(lineNum); kprint(F("] "));
+          kprintln(cleanedLine);
+          parseAndExecute(cleanedLine, true);
+        }
         li = 0;
         delay(100); 
         yield();
