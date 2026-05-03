@@ -2,6 +2,9 @@
 
 UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resource management. It features a Virtual File System (VFS), multitasking task management, and integrated security protocols.
 
+![UniKernel Dashboard](image.png)
+
+
 ---
 
 ## 1. Command Reference
@@ -24,6 +27,9 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `save` | `save` | Persist the VFS state to EEPROM. |
 | `load` | `load` | Restore the VFS state from EEPROM. |
 | `lfs` | `lfs [ls/format/write]` | Manage the LittleFS persistent flash storage. |
+| `chown` | `chown [root/guest] [file]` | Change the owner of a file. |
+| `chmod` | `chmod [mode] [file]` | Change file permissions (Octal mode). |
+
 
 ### 1.2 Hardware Interface Control
 | Command | Usage | Description |
@@ -48,6 +54,9 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `telnet` | `telnet [on/off]` | Enable or disable remote access via Telnet. |
 | `web` | `web [on/off]` | Enable or disable the Web Dashboard interface. |
 | `ssh` | `ssh [on/off]` | Enable or disable the Encrypted Shell (Port 22). |
+| `bt` | `bt [on/off]` | Manage Bluetooth status (ESP32 only). |
+| `netstat` | `netstat` | Display active network services and ports. |
+
 
 ### 1.4 System Monitor and Management
 | Command | Usage | Description |
@@ -63,6 +72,11 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `reboot` | `reboot` | Perform a system hardware restart. |
 | `neofetch` | `neofetch` | Display system information banner. |
 | `clear` | `clear` | Clear the terminal screen. |
+| `dmesg` | `dmesg` | Display kernel log messages. |
+| `df` | `df` | Show filesystem disk space usage. |
+| `whoami` | `whoami` | Display current logged-in user. |
+| `uname` | `uname` | Show system and kernel information. |
+
 
 ### 1.5 Security and Utilities
 | Command | Usage | Description |
@@ -78,6 +92,10 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `env` | `env` | List all active environment variables. |
 | `sh` | `sh [script_file]` | Execute a batch of shell commands from a file. |
 | `cron` | `cron [list/rm ID]` | Manage scheduled tasks. |
+| `delay` | `delay [ms]` | Pause execution for specified milliseconds. |
+| `kill` | `kill [pid]` | Terminate a background task by PID. |
+| `bg` | `bg [blink]` | Start a task in the background. |
+
 
 ---
 
