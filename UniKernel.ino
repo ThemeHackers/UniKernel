@@ -5,29 +5,31 @@
 #include <string.h>
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h> 
-#include <WiFiServerSecure.h>
-#include <LittleFS.h>
 #include <ArduinoOTA.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
+#include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
-#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-#include <WiFi.h>
-#include <WebServer.h>
-#include <HTTPClient.h>
-#include <ESPmDNS.h>
 #include <LittleFS.h>
+#include <WiFiServerSecure.h>
+
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include <ArduinoOTA.h>
 #include <BluetoothSerial.h>
+#include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <LittleFS.h>
+#include <WebServer.h>
+#include <WiFi.h>
+
 #endif
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-#define MAX_FILES 16      
-#define CONTENT_LEN 128    
-#define DMESG_LINES 10     
-#define MAX_INPUT_LEN 192  
-#define MAX_TASKS 6       
+#define MAX_FILES 16
+#define CONTENT_LEN 128
+#define DMESG_LINES 10
+#define MAX_INPUT_LEN 192
+#define MAX_TASKS 6
 #else
 #define MAX_FILES 4
 #define CONTENT_LEN 64
@@ -39,22 +41,25 @@
 #define NAME_LEN 12
 #define PATH_LEN 16
 #define DMESG_LEN 32
-#define MAX_ENV 8          
+#define MAX_ENV 8
 #define ENV_KEY_LEN 10
 #define ENV_VAL_LEN 32
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
 #define BOARD_NAME "esp8266"
-#include <time.h> 
+#include <time.h>
 extern "C" {
-  #include "user_interface.h"
+#include "user_interface.h"
 }
 
 void stripQuotes(char *s) {
-  if (!s) return;
+  if (!s)
+    return;
   char *start = s;
-  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+  while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')
+    start++;
   int len = strlen(start);
-  while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' || start[len - 1] == '\r' || start[len - 1] == '\n')) {
+  while (len > 0 && (start[len - 1] == ' ' || start[len - 1] == '\t' ||
+                     start[len - 1] == '\r' || start[len - 1] == '\n')) {
     start[len - 1] = '\0';
     len--;
   }
@@ -79,18 +84,21 @@ void stripQuotes(char *s) {
 #define FLAG_ACTIVE 0x01
 #define FLAG_ISDIR 0x02
 
-#define CLR_RST  "\033[0m"
-#define CLR_RED  "\033[1;31m"
-#define CLR_GRN  "\033[1;32m"
-#define CLR_YLW  "\033[1;33m"
-#define CLR_BLU  "\033[1;34m"
-#define CLR_MAG  "\033[1;35m"
-#define CLR_CYN  "\033[1;36m"
-#define CLR_WHT  "\033[1;37m"
+#define CLR_RST "\033[0m"
+#define CLR_RED "\033[1;31m"
+#define CLR_GRN "\033[1;32m"
+#define CLR_YLW "\033[1;33m"
+#define CLR_BLU "\033[1;34m"
+#define CLR_MAG "\033[1;35m"
+#define CLR_CYN "\033[1;36m"
+#define CLR_WHT "\033[1;37m"
 
-bool useColor = false; 
+bool useColor = false;
 
-void kprintColor(const char* c) { if(useColor) kprint(c); }
+void kprintColor(const char *c) {
+  if (useColor)
+    kprint(c);
+}
 
 typedef struct {
   char name[NAME_LEN];
@@ -133,11 +141,12 @@ CronEntry cronTable[MAX_CRON];
 
 RAMFile vfs[MAX_FILES];
 char currentPath[PATH_LEN] = "/";
-char inputBuffer[MAX_INPUT_LEN] = ""; 
+char inputBuffer[MAX_INPUT_LEN] = "";
 int inputLen = 0;
 DmesgEntry dmesg[DMESG_LINES];
 int dmesgIndex = 0;
 int shellDepth = 0;
+int escState = 0; 
 bool serialAuthenticated = false;
 bool telnetAuthenticated = false;
 uint8_t loginFailCount = 0;
@@ -147,6 +156,13 @@ bool telnetEnabled = false;
 bool webEnabled = false;
 bool otaEnabled = false;
 int redirectionFileIdx = -1;
+
+#define MAX_HISTORY 8
+char cmdHistory[MAX_HISTORY][MAX_INPUT_LEN];
+int historyWriteIdx = 0;
+int historyViewIdx = -1;
+int historyCount = 0;
+
 unsigned long lastSerialActivity = 0;
 unsigned long lastTelnetActivity = 0;
 unsigned long lastLoginAttempt = 0;
@@ -161,6 +177,7 @@ unsigned long loginCooldown = 0;
 #define EEPROM_SALT_ADDR 530
 #define EEPROM_OTA_PASS_ADDR 550
 #define EEPROM_FAIL_COUNT_ADDR 566
+#define EEPROM_BOOT_FILE_ADDR 580
 
 #define EEPROM_VFS_ADDR 1024
 #define VFS_MAGIC 0x55AA
@@ -176,45 +193,77 @@ unsigned long loginCooldown = 0;
 
 void fastPinMode(uint8_t pin, uint8_t mode) {
   if (pin <= 7) {
-    if (mode == OUTPUT) DDRD |= (1 << pin);
-    else { DDRD &= ~(1 << pin); if (mode == INPUT_PULLUP) PORTD |= (1 << pin); }
+    if (mode == OUTPUT)
+      DDRD |= (1 << pin);
+    else {
+      DDRD &= ~(1 << pin);
+      if (mode == INPUT_PULLUP)
+        PORTD |= (1 << pin);
+    }
   } else if (pin <= 13) {
     uint8_t bPin = pin - 8;
-    if (mode == OUTPUT) DDRB |= (1 << bPin);
-    else { DDRB &= ~(1 << bPin); if (mode == INPUT_PULLUP) PORTB |= (1 << bPin); }
+    if (mode == OUTPUT)
+      DDRB |= (1 << bPin);
+    else {
+      DDRB &= ~(1 << bPin);
+      if (mode == INPUT_PULLUP)
+        PORTB |= (1 << bPin);
+    }
   } else if (pin <= 19) {
     uint8_t cPin = pin - 14;
-    if (mode == OUTPUT) DDRC |= (1 << cPin);
-    else { DDRC &= ~(1 << cPin); if (mode == INPUT_PULLUP) PORTC |= (1 << cPin); }
+    if (mode == OUTPUT)
+      DDRC |= (1 << cPin);
+    else {
+      DDRC &= ~(1 << cPin);
+      if (mode == INPUT_PULLUP)
+        PORTC |= (1 << cPin);
+    }
   }
 }
 
 void fastDigitalWrite(uint8_t pin, uint8_t val) {
-  if (pin <= 7) { if (val) PORTD |= (1 << pin); else PORTD &= ~(1 << pin); }
-  else if (pin <= 13) { uint8_t bPin = pin - 8; if (val) PORTB |= (1 << bPin); else PORTB &= ~(1 << bPin); }
-  else if (pin <= 19) { uint8_t cPin = pin - 14; if (val) PORTC |= (1 << cPin); else PORTC &= ~(1 << cPin); }
+  if (pin <= 7) {
+    if (val)
+      PORTD |= (1 << pin);
+    else
+      PORTD &= ~(1 << pin);
+  } else if (pin <= 13) {
+    uint8_t bPin = pin - 8;
+    if (val)
+      PORTB |= (1 << bPin);
+    else
+      PORTB &= ~(1 << bPin);
+  } else if (pin <= 19) {
+    uint8_t cPin = pin - 14;
+    if (val)
+      PORTC |= (1 << cPin);
+    else
+      PORTC &= ~(1 << cPin);
+  }
 }
 
 uint8_t fastDigitalRead(uint8_t pin) {
-  if (pin <= 7) return (PIND & (1 << pin)) ? HIGH : LOW;
-  if (pin <= 13) return (PINB & (1 << (pin - 8))) ? HIGH : LOW;
-  if (pin <= 19) return (PINC & (1 << (pin - 14))) ? HIGH : LOW;
+  if (pin <= 7)
+    return (PIND & (1 << pin)) ? HIGH : LOW;
+  if (pin <= 13)
+    return (PINB & (1 << (pin - 8))) ? HIGH : LOW;
+  if (pin <= 19)
+    return (PINC & (1 << (pin - 14))) ? HIGH : LOW;
   return LOW;
 }
 
-
 volatile uint32_t system_ticks = 0;
-ISR(TIMER1_COMPA_vect) {
-  system_ticks++;
-}
+ISR(TIMER1_COMPA_vect) { system_ticks++; }
 
 void initHeartbeat() {
-  cli(); 
-  TCCR1A = 0; TCCR1B = 0; TCNT1 = 0;
-  OCR1A = 15624; 
+  cli();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  TCNT1 = 0;
+  OCR1A = 15624;
   TCCR1B |= (1 << WGM12);
-  TCCR1B |= (1 << CS12) | (1 << CS10); 
-  TIMSK1 |= (1 << OCIE1A); 
+  TCCR1B |= (1 << CS12) | (1 << CS10);
+  TIMSK1 |= (1 << OCIE1A);
   sei();
 }
 #else
@@ -222,20 +271,29 @@ void initHeartbeat() {
 #if defined(ESP8266)
 
 void fastPinMode(uint8_t pin, uint8_t mode) {
-  
+
   pinMode(pin, mode);
-  
-  if (pin > 16) return;
-  if (mode == OUTPUT) GPE |= (1 << pin);
-  else GPE &= ~(1 << pin);
+
+  if (pin > 16)
+    return;
+  if (mode == OUTPUT)
+    GPE |= (1 << pin);
+  else
+    GPE &= ~(1 << pin);
 }
 void fastDigitalWrite(uint8_t pin, uint8_t val) {
-  if (pin > 16) { digitalWrite(pin, val); return; }
-  if (val) GPOS = (1 << pin);
-  else GPOC = (1 << pin);
+  if (pin > 16) {
+    digitalWrite(pin, val);
+    return;
+  }
+  if (val)
+    GPOS = (1 << pin);
+  else
+    GPOC = (1 << pin);
 }
 uint8_t fastDigitalRead(uint8_t pin) {
-  if (pin > 16) return digitalRead(pin);
+  if (pin > 16)
+    return digitalRead(pin);
   return (GPI & (1 << pin)) ? HIGH : LOW;
 }
 #elif defined(ESP32)
@@ -245,7 +303,6 @@ uint8_t fastDigitalRead(uint8_t pin) {
 #define fastDigitalRead(p) digitalRead(p)
 #endif
 #endif
-
 
 ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial);
 ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial);
@@ -342,7 +399,7 @@ ESP8266WebServer webServer(80);
 #elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 WiFiServer telnetServer(23);
 WiFiClient telnetClient;
-bool sshEnabled = false; 
+bool sshEnabled = false;
 int authFailures = 0;
 unsigned long lockoutEnd = 0;
 char whitelistIP[16] = "";
@@ -355,111 +412,140 @@ bool btEnabled = false;
 
 ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
   if (redirectionFileIdx != -1) {
-    strncat_P(vfs[redirectionFileIdx].content, (PGM_P)s, CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    strncat_P(vfs[redirectionFileIdx].content, (PGM_P)s,
+              CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
     return;
   }
   Serial.print(s);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.print(s);
 #endif
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (sshClient && sshClient.connected()) sshClient.print(s);
+  if (sshClient && sshClient.connected())
+    sshClient.print(s);
 #endif
 #if defined(ESP32)
-  if (btEnabled) SerialBT.print(s);
+  if (btEnabled)
+    SerialBT.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(const char *s) {
   if (redirectionFileIdx != -1) {
-    strncat(vfs[redirectionFileIdx].content, s, CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    strncat(vfs[redirectionFileIdx].content, s,
+            CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
     return;
   }
   Serial.print(s);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.print(s);
 #endif
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (sshClient && sshClient.connected()) sshClient.print(s);
+  if (sshClient && sshClient.connected())
+    sshClient.print(s);
 #endif
 #if defined(ESP32)
-  if (btEnabled) SerialBT.print(s);
+  if (btEnabled)
+    SerialBT.print(s);
 #endif
 }
 ICACHE_FLASH_ATTR void kprint(int n) {
   if (redirectionFileIdx != -1) {
-    char buf[12]; itoa(n, buf, 10);
-    strncat(vfs[redirectionFileIdx].content, buf, CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    char buf[12];
+    itoa(n, buf, 10);
+    strncat(vfs[redirectionFileIdx].content, buf,
+            CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
     return;
   }
   Serial.print(n);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-  if (telnetClient && telnetClient.connected()) telnetClient.print(n);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.print(n);
 #endif
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (sshClient && sshClient.connected()) sshClient.print(n);
+  if (sshClient && sshClient.connected())
+    sshClient.print(n);
 #endif
 #if defined(ESP32)
-  if (btEnabled) SerialBT.print(n);
+  if (btEnabled)
+    SerialBT.print(n);
 #endif
 }
 ICACHE_FLASH_ATTR void kprintln(const __FlashStringHelper *s) {
-  kprint(s); kprintln();
+  kprint(s);
+  kprintln();
 }
-ICACHE_FLASH_ATTR 
+ICACHE_FLASH_ATTR
 void kprint_sys(const char *s) {
   Serial.print(s);
-  if (telnetClient && telnetClient.connected()) telnetClient.print(s);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.print(s);
 }
 void kprint_sys(const String &s) { kprint_sys(s.c_str()); }
-void kprintln_sys(const char *s) { kprint_sys(s); kprint_sys("\n"); }
+void kprintln_sys(const char *s) {
+  kprint_sys(s);
+  kprint_sys("\n");
+}
 void kprintln_sys(const String &s) { kprintln_sys(s.c_str()); }
 void kprintln_sys(const __FlashStringHelper *ifsh) {
   Serial.println(ifsh);
-  if (telnetClient && telnetClient.connected()) telnetClient.println(ifsh);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.println(ifsh);
 }
 void kprint_sys(const __FlashStringHelper *ifsh) {
   Serial.print(ifsh);
-  if (telnetClient && telnetClient.connected()) telnetClient.print(ifsh);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.print(ifsh);
 }
 
-
-char* kTrim(char* s) {
-  if (!s) return s;
-  while (isspace((unsigned char)*s)) s++;
-  if (*s == 0) return s;
-  char* end = s + strlen(s) - 1;
-  while (end > s && isspace((unsigned char)*end)) end--;
+char *kTrim(char *s) {
+  if (!s)
+    return s;
+  while (isspace((unsigned char)*s))
+    s++;
+  if (*s == 0)
+    return s;
+  char *end = s + strlen(s) - 1;
+  while (end > s && isspace((unsigned char)*end))
+    end--;
   end[1] = '\0';
   return s;
 }
 
 void kprintln(const char *s) {
-  kprint(s); kprintln();
+  kprint(s);
+  kprintln();
 }
-ICACHE_FLASH_ATTR void kprintln() {
-  kprint(F("\r\n"));
-}
+ICACHE_FLASH_ATTR void kprintln() { kprint(F("\r\n")); }
 ICACHE_FLASH_ATTR void kprintln(int n) {
-  kprint(n); kprintln();
+  kprint(n);
+  kprintln();
 }
 ICACHE_FLASH_ATTR void kprintln(unsigned long n) {
   if (redirectionFileIdx != -1) {
-    char buf[16]; ltoa(n, buf, 10);
-    strncat(vfs[redirectionFileIdx].content, buf, CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    char buf[16];
+    ltoa(n, buf, 10);
+    strncat(vfs[redirectionFileIdx].content, buf,
+            CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
     kprint(F("\r\n"));
     return;
   }
   Serial.println(n);
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (telnetClient && telnetClient.connected()) telnetClient.println(n);
-  if (sshClient && sshClient.connected()) sshClient.println(n);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.println(n);
+  if (sshClient && sshClient.connected())
+    sshClient.println(n);
 #endif
 }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 ICACHE_FLASH_ATTR void kprintln(IPAddress ip) {
   Serial.println(ip);
-  if (telnetClient && telnetClient.connected()) telnetClient.println(ip);
-  if (sshClient && sshClient.connected()) sshClient.println(ip);
+  if (telnetClient && telnetClient.connected())
+    telnetClient.println(ip);
+  if (sshClient && sshClient.connected())
+    sshClient.println(ip);
 }
 #endif
 void kprint(String s) {
@@ -476,7 +562,8 @@ void kprintln(String s) {
     telnetClient.println(s);
 #endif
 #if defined(ESP32)
-  if (btEnabled) SerialBT.println(s);
+  if (btEnabled)
+    SerialBT.println(s);
 #endif
 }
 
@@ -574,8 +661,9 @@ ICACHE_FLASH_ATTR void setup() {
   system_update_cpu_freq(160);
 #endif
   Serial.begin(115200);
-  delay(1500); 
-  while(Serial.available()) Serial.read(); 
+  delay(1500);
+  while (Serial.available())
+    Serial.read();
   Serial.println(F("\n\n[System] Booting UniKernel (160MHz Mode)..."));
   yield();
 
@@ -604,9 +692,6 @@ ICACHE_FLASH_ATTR void setup() {
   }
 
   Wire.begin();
-#if defined(ARDUINO_ARCH_AVR)
-  initHeartbeat();
-#endif
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   WiFi.mode(WIFI_STA);
   WiFi.setAutoConnect(true);
@@ -626,7 +711,8 @@ ICACHE_FLASH_ATTR void setup() {
 
   uint8_t storedFails;
   EEPROM.get(EEPROM_FAIL_COUNT_ADDR, storedFails);
-  if (storedFails != 0xFF) loginFailCount = storedFails;
+  if (storedFails != 0xFF)
+    loginFailCount = storedFails;
   if (loginFailCount >= MAX_FAIL_COUNT) {
     isLockedOut = true;
     addDmesg(F("System remains locked (Max Fails)"));
@@ -649,28 +735,32 @@ ICACHE_FLASH_ATTR void setup() {
   LittleFS.begin();
   char otaPass[16];
   EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-  if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
+  if (otaPass[0] == 0xFF || otaPass[0] == 0x00)
+    strcpy(otaPass, "unikernel");
   ArduinoOTA.setHostname("UniKernel-Node");
   ArduinoOTA.setPassword(otaPass);
   ArduinoOTA.onStart([]() { addDmesg(F("OTA: Starting Update")); });
   ArduinoOTA.onEnd([]() { addDmesg(F("OTA: Update Finished")); });
-  ArduinoOTA.onError([](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
+  ArduinoOTA.onError(
+      [](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
   MDNS.begin("unikernel");
-  
+
   static const uint8_t rsakey[] = {
-    0x30, 0x82, 0x01, 0x3a, 0x02, 0x01, 0x00, 0x02, 0x41, 0x00, 0xcb, 0x33, 0xe4, 0x0e, 0x56, 0x1d,
-    0x40, 0xab, 0x1e, 0x5a, 0x1d, 0x41, 0x3e, 0x6e, 0xf6, 0x76, 0x0d, 0x98, 0x6b, 0x82, 0x18, 0x77,
-    0x39, 0xf9, 0x7d, 0x0f, 0x3d, 0x15, 0x31, 0x93, 0xf4, 0x46, 0xc2, 0x15, 0x6e, 0xc1, 0x43, 0xd0,
-    0x8b, 0xa1, 0x6e, 0xf4, 0x69, 0x77, 0x87, 0x16, 0x95, 0x3c, 0x6b, 0x18, 0x48, 0x7d, 0x1f, 0x58,
-    0x4a, 0x6d, 0x7d, 0x1a, 0xcb, 0x02, 0x03, 0x01, 0x00, 0x01
-  }; 
+      0x30, 0x82, 0x01, 0x3a, 0x02, 0x01, 0x00, 0x02, 0x41, 0x00, 0xcb,
+      0x33, 0xe4, 0x0e, 0x56, 0x1d, 0x40, 0xab, 0x1e, 0x5a, 0x1d, 0x41,
+      0x3e, 0x6e, 0xf6, 0x76, 0x0d, 0x98, 0x6b, 0x82, 0x18, 0x77, 0x39,
+      0xf9, 0x7d, 0x0f, 0x3d, 0x15, 0x31, 0x93, 0xf4, 0x46, 0xc2, 0x15,
+      0x6e, 0xc1, 0x43, 0xd0, 0x8b, 0xa1, 0x6e, 0xf4, 0x69, 0x77, 0x87,
+      0x16, 0x95, 0x3c, 0x6b, 0x18, 0x48, 0x7d, 0x1f, 0x58, 0x4a, 0x6d,
+      0x7d, 0x1a, 0xcb, 0x02, 0x03, 0x01, 0x00, 0x01};
   static const uint8_t rsacert[] = {
-    0x30, 0x82, 0x01, 0x31, 0x30, 0x81, 0xd8, 0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01, 0x30,
-    0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x11,
-    0x31, 0x0f, 0x30, 0x0d, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x06, 0x4b, 0x65, 0x72, 0x6e, 0x65,
-    0x6c
-  };
-  sshServer.setRSACert(new BearSSL::X509List(rsacert, sizeof(rsacert)), new BearSSL::PrivateKey(rsakey, sizeof(rsakey)));
+      0x30, 0x82, 0x01, 0x31, 0x30, 0x81, 0xd8, 0xa0, 0x03, 0x02,
+      0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x0d, 0x06, 0x09, 0x2a,
+      0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
+      0x30, 0x11, 0x31, 0x0f, 0x30, 0x0d, 0x06, 0x03, 0x55, 0x04,
+      0x03, 0x0c, 0x06, 0x4b, 0x65, 0x72, 0x6e, 0x65, 0x6c};
+  sshServer.setRSACert(new BearSSL::X509List(rsacert, sizeof(rsacert)),
+                       new BearSSL::PrivateKey(rsakey, sizeof(rsakey)));
 
   addDmesg(F("Secure Boot Complete"));
 #endif
@@ -681,30 +771,50 @@ ICACHE_FLASH_ATTR void setup() {
   }
 
   delay(500);
-  char bootCmd[12]; 
+  char bootCmd[12];
   strcpy_P(bootCmd, PSTR("neofetch"));
   parseAndExecute(bootCmd, true);
-  
 
-  int rcIdx = -1;
-  for (int i = 0; i < MAX_FILES; i++) {
-    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "rc.sh") == 0) {
-      rcIdx = i;
-      break;
+  char bootFile[NAME_LEN];
+  EEPROM.get(EEPROM_BOOT_FILE_ADDR, bootFile);
+  bootFile[NAME_LEN - 1] = '\0'; 
+  
+  bool isValid = (bootFile[0] != 0xFF && bootFile[0] != '\0');
+  if (isValid) {
+    for (int i = 0; i < (int)strlen(bootFile); i++) {
+      if (bootFile[i] < 32 || bootFile[i] > 126) { isValid = false; break; }
     }
   }
-  if (rcIdx != -1) {
-    kprintln(F("[System] Initializing Services..."));
-    yield();
-    delay(1000); 
-    kprintln(F("[System] Found rc.sh. Booting in 2s..."));
-    delay(2000); 
-    bool oldAuth = serialAuthenticated;
-    serialAuthenticated = true; 
-    runScript(vfs[rcIdx].content);
-    serialAuthenticated = oldAuth; 
-  } else {
-    kprintln(F("[System] No rc.sh found. (Create one for auto-start)"));
+
+  if (!isValid) {
+    strcpy(bootFile, "0rc.sh");
+  }
+
+  bool wifiSuccess = (WiFi.status() == WL_CONNECTED);
+  bool scriptExecuted = false;
+
+  auto runBootFile = [&](const char *name) {
+    for (int i = 0; i < MAX_FILES; i++) {
+      if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, name) == 0) {
+        kprint(F("[System] Booting from "));
+        kprint(name);
+        kprintln(F("..."));
+        bool oldAuth = serialAuthenticated;
+        serialAuthenticated = true;
+        runScript(vfs[i].content);
+        serialAuthenticated = oldAuth;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (runBootFile(bootFile)) {
+    scriptExecuted = true;
+  }
+
+  if (!scriptExecuted) {
+    kprint(F("[System] Boot script '")); kprint(bootFile); kprintln(F("' not found."));
   }
 
   printPrompt();
@@ -713,64 +823,114 @@ ICACHE_FLASH_ATTR void setup() {
 ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.collectHeaders("Host");
   webServer.on("/", []() {
-    String html = F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>"
-      "<title>UniKernel | Dashboard</title>"
-      "<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display=swap' rel='stylesheet'>"
-      "<style>"
-      ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: #00f2ff; --accent: #7000ff; }"
-      "body { background: var(--bg); color: #fff; font-family: 'Outfit', sans-serif; margin: 0; overflow-x: hidden; }"
-      ".glass { background: var(--card); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
-      ".container { max-width: 1000px; margin: 50px auto; padding: 20px; }"
-      "header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }"
-      "h1 { font-weight: 700; font-size: 2.5rem; background: linear-gradient(45deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; }"
-      ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }"
-      ".stats-card { padding: 30px; position: relative; overflow: hidden; }"
-      ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: var(--primary); margin: 10px 0; }"
-      ".btn { padding: 12px 25px; border-radius: 12px; border: none; background: linear-gradient(45deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
-      ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0,242,255,0.4); }"
-      ".status-dot { width: 10px; height: 10px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; }"
-      "</style></head><body>"
-      "<div class='container'><header><h1>UniKernel Core</h1><div><span class='status-dot'></span>SYSTEM ONLINE</div></header>"
-      "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
-      "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
-      "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3>"
-      "<div style='margin-bottom:15px; display:flex; gap:10px;'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'>"
-      "<button class='btn' onclick='alert(\"Password Saved Locally\")' style='background:#444'>SAVE</button></div>"
-      "<div style='display:flex; gap:10px;'>"
-      "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
-      "<h3 style='margin-top:20px'>Bluetooth Link</h3><div style='display:flex; gap:10px;'>"
-      "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT ENABLE</button><button class='btn' onclick='bt(0)' style='background:#444'>BT DISABLE</button></div></div>"
-      "</div><script>"
-      "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-      "function toggle(p,v){const pw=encodeURIComponent(document.getElementById('p').value); fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
-      "function bt(v){const pw=encodeURIComponent(document.getElementById('p').value); fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); update();"
-      "</script></body></html>");
+    String html =
+        F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta "
+          "name='viewport' content='width=device-width,initial-scale=1.0'>"
+          "<title>UniKernel | Dashboard</title>"
+          "<link "
+          "href='https://fonts.googleapis.com/"
+          "css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display="
+          "swap' rel='stylesheet'>"
+          "<style>"
+          ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: "
+          "#00f2ff; --accent: #7000ff; }"
+          "body { background: var(--bg); color: #fff; font-family: 'Outfit', "
+          "sans-serif; margin: 0; overflow-x: hidden; }"
+          ".glass { background: var(--card); backdrop-filter: blur(10px); "
+          "border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
+          ".container { max-width: 1000px; margin: 50px auto; padding: 20px; }"
+          "header { display: flex; justify-content: space-between; "
+          "align-items: center; margin-bottom: 40px; }"
+          "h1 { font-weight: 700; font-size: 2.5rem; background: "
+          "linear-gradient(45deg, var(--primary), var(--accent)); "
+          "-webkit-background-clip: text; -webkit-text-fill-color: "
+          "transparent; margin: 0; }"
+          ".grid { display: grid; grid-template-columns: repeat(auto-fit, "
+          "minmax(300px, 1fr)); gap: 20px; }"
+          ".stats-card { padding: 30px; position: relative; overflow: hidden; }"
+          ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: "
+          "var(--primary); margin: 10px 0; }"
+          ".btn { padding: 12px 25px; border-radius: 12px; border: none; "
+          "background: linear-gradient(45deg, var(--primary), var(--accent)); "
+          "color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
+          ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px "
+          "rgba(0,242,255,0.4); }"
+          ".status-dot { width: 10px; height: 10px; background: #00ff88; "
+          "border-radius: 50%; display: inline-block; margin-right: 10px; "
+          "box-shadow: 0 0 10px #00ff88; }"
+          "</style></head><body>"
+          "<div class='container'><header><h1>UniKernel Core</h1><div><span "
+          "class='status-dot'></span>SYSTEM ONLINE</div></header>"
+          "<div class='grid'><div class='stats-card glass'><h3>Memory "
+          "Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap "
+          "Bytes</p></div>"
+          "<div class='stats-card glass'><h3>System Uptime</h3><div "
+          "class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
+          "<div class='glass' style='margin-top:20px; "
+          "padding:30px;'><h3>Hardware Control</h3>"
+          "<div style='margin-bottom:15px; display:flex; gap:10px;'><input "
+          "type='password' id='p' placeholder='Auth Password' "
+          "style='padding:10px; border-radius:8px; border:1px solid #444; "
+          "background:#111; color:#fff'>"
+          "<button class='btn' onclick='alert(\"Password Saved Locally\")' "
+          "style='background:#444'>SAVE</button></div>"
+          "<div style='display:flex; gap:10px;'>"
+          "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button "
+          "class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED "
+          "OFF</button></div>"
+          "<h3 style='margin-top:20px'>Bluetooth Link</h3><div "
+          "style='display:flex; gap:10px;'>"
+          "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT "
+          "ENABLE</button><button class='btn' onclick='bt(0)' "
+          "style='background:#444'>BT DISABLE</button></div></div>"
+          "</div><script>"
+          "function "
+          "update(){fetch('/api/"
+          "stats').then(r=>r.json()).then(d=>{document.getElementById('mem')."
+          "innerText=d.free;document.getElementById('up').innerText=d.up;});}"
+          "function toggle(p,v){const "
+          "pw=encodeURIComponent(document.getElementById('p').value); "
+          "fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
+          "function bt(v){const "
+          "pw=encodeURIComponent(document.getElementById('p').value); "
+          "fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); "
+          "update();"
+          "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
 
   webServer.on("/api/gpio", []() {
     char otaPass[16];
     EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-    if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
+    if (otaPass[0] == 0xFF || otaPass[0] == 0x00)
+      strcpy(otaPass, "unikernel");
     if (webServer.arg("pass") != String(otaPass)) {
       webServer.send(401, "text/plain", "Unauthorized");
       return;
     }
-    
+
     String host = webServer.header("Host");
     bool hostAllowed = false;
-    if (host.length() == 0) hostAllowed = true;
-    else if (host.startsWith("192.168.")) hostAllowed = true;
-    else if (host.startsWith("10.")) hostAllowed = true;
-    else if (host.startsWith("172.")) hostAllowed = true; 
-    else if (host.startsWith("169.254.")) hostAllowed = true;
-    else if (host.startsWith("localhost")) hostAllowed = true;
-    else if (host.startsWith("unikernel")) hostAllowed = true;
-    else if (host.equals(WiFi.localIP().toString())) hostAllowed = true;
-    
+    if (host.length() == 0)
+      hostAllowed = true;
+    else if (host.startsWith("192.168."))
+      hostAllowed = true;
+    else if (host.startsWith("10."))
+      hostAllowed = true;
+    else if (host.startsWith("172."))
+      hostAllowed = true;
+    else if (host.startsWith("169.254."))
+      hostAllowed = true;
+    else if (host.startsWith("localhost"))
+      hostAllowed = true;
+    else if (host.startsWith("unikernel"))
+      hostAllowed = true;
+    else if (host.equals(WiFi.localIP().toString()))
+      hostAllowed = true;
+
     if (!hostAllowed) {
-       webServer.send(403, "text/plain", "CSRF Protection Triggered");
-       return;
+      webServer.send(403, "text/plain", "CSRF Protection Triggered");
+      return;
     }
     int pin = webServer.arg("pin").toInt();
     int val = webServer.arg("val").toInt();
@@ -778,11 +938,13 @@ ICACHE_FLASH_ATTR void setupWebServer() {
       pinMode(pin, OUTPUT);
       digitalWrite(pin, val);
       webServer.send(200, "text/plain", "OK");
-    } else webServer.send(400, "text/plain", "Invalid Pin");
+    } else
+      webServer.send(400, "text/plain", "Invalid Pin");
   });
 
   webServer.on("/api/stats", []() {
-    String json = "{\"free\":" + String(ESP.getFreeHeap()) + ",\"up\":" + String(millis() / 1000);
+    String json = "{\"free\":" + String(ESP.getFreeHeap()) +
+                  ",\"up\":" + String(millis() / 1000);
 #if defined(ESP32)
     json += ",\"bt\":" + String(btEnabled ? 1 : 0);
 #endif
@@ -793,58 +955,78 @@ ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.on("/api/bt", []() {
     char otaPass[16];
     EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-    if (otaPass[0] == 0xFF || otaPass[0] == 0x00) strcpy(otaPass, "unikernel");
+    if (otaPass[0] == 0xFF || otaPass[0] == 0x00)
+      strcpy(otaPass, "unikernel");
     if (webServer.arg("pass") != String(otaPass)) {
       webServer.send(401, "text/plain", "Unauthorized");
       return;
     }
-    
+
     String host = webServer.header("Host");
     bool hostAllowed = false;
-    if (host.length() == 0) hostAllowed = true;
-    else if (host.startsWith("192.168.")) hostAllowed = true;
-    else if (host.startsWith("10.")) hostAllowed = true;
-    else if (host.startsWith("172.")) hostAllowed = true;
-    else if (host.startsWith("169.254.")) hostAllowed = true;
-    else if (host.startsWith("localhost")) hostAllowed = true;
-    else if (host.startsWith("unikernel")) hostAllowed = true;
-    else if (host.equals(WiFi.localIP().toString())) hostAllowed = true;
-    
+    if (host.length() == 0)
+      hostAllowed = true;
+    else if (host.startsWith("192.168."))
+      hostAllowed = true;
+    else if (host.startsWith("10."))
+      hostAllowed = true;
+    else if (host.startsWith("172."))
+      hostAllowed = true;
+    else if (host.startsWith("169.254."))
+      hostAllowed = true;
+    else if (host.startsWith("localhost"))
+      hostAllowed = true;
+    else if (host.startsWith("unikernel"))
+      hostAllowed = true;
+    else if (host.equals(WiFi.localIP().toString()))
+      hostAllowed = true;
+
     if (!hostAllowed) {
-       webServer.send(403, "text/plain", "CSRF Protection Triggered");
-       return;
+      webServer.send(403, "text/plain", "CSRF Protection Triggered");
+      return;
     }
 #if defined(ESP32)
     int val = webServer.arg("val").toInt();
-    if (val == 1) { SerialBT.begin("UniKernel-Web"); btEnabled = true; }
-    else { SerialBT.end(); btEnabled = false; }
+    if (val == 1) {
+      SerialBT.begin("UniKernel-Web");
+      btEnabled = true;
+    } else {
+      SerialBT.end();
+      btEnabled = false;
+    }
     webServer.send(200, "text/plain", "OK");
 #else
     webServer.send(400, "text/plain", "Not Supported");
 #endif
   });
-  
+
   webServer.begin();
 }
 
 ICACHE_FLASH_ATTR void loop() {
-  if (webEnabled) webServer.handleClient();
+  if (webEnabled)
+    webServer.handleClient();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (otaEnabled) { ArduinoOTA.handle(); MDNS.update(); }
+  if (otaEnabled) {
+    ArduinoOTA.handle();
+    MDNS.update();
+  }
   if (sshEnabled) {
     if (sshServer.hasClient()) {
       WiFiClientSecure c = sshServer.available();
       String remoteIP = c.remoteIP().toString();
       if (strlen(whitelistIP) > 0 && remoteIP != whitelistIP) {
         c.println(F("Firewall: IP Blocked"));
-        addDmesg(F("Firewall blocked SSH from: ")); addDmesgRam(remoteIP.c_str());
+        addDmesg(F("Firewall blocked SSH from: "));
+        addDmesgRam(remoteIP.c_str());
         c.stop();
       } else if (millis() < lockoutEnd) {
         c.println(F("Access Denied: Lockout Active"));
         c.stop();
       } else {
         sshClient = c;
-        addDmesg(F("SSH connected from: ")); addDmesgRam(remoteIP.c_str());
+        addDmesg(F("SSH connected from: "));
+        addDmesgRam(remoteIP.c_str());
         sshClient.println(F("\n--- UniKernel Secure Shell ---"));
         sshClient.println(F("Access Restricted. Please login."));
         printPrompt();
@@ -860,8 +1042,10 @@ ICACHE_FLASH_ATTR void loop() {
   if (ti->tm_year > 100 && ti->tm_min != lastM) {
     lastM = ti->tm_min;
     for (int i = 0; i < MAX_CRON; i++) {
-      if (cronTable[i].active && cronTable[i].h == ti->tm_hour && cronTable[i].m == ti->tm_min) {
-        char buf[32]; strcpy(buf, cronTable[i].cmd);
+      if (cronTable[i].active && cronTable[i].h == ti->tm_hour &&
+          cronTable[i].m == ti->tm_min) {
+        char buf[32];
+        strcpy(buf, cronTable[i].cmd);
         executeCommand(buf, true);
       }
     }
@@ -900,7 +1084,8 @@ ICACHE_FLASH_ATTR void loop() {
     String remoteIP = c.remoteIP().toString();
     if (strlen(whitelistIP) > 0 && remoteIP != whitelistIP) {
       c.println(F("Firewall: IP Blocked"));
-      addDmesg(F("Firewall blocked Telnet from: ")); addDmesgRam(remoteIP.c_str());
+      addDmesg(F("Firewall blocked Telnet from: "));
+      addDmesgRam(remoteIP.c_str());
       c.stop();
     } else if (!telnetClient || !telnetClient.connected()) {
       telnetClient = c;
@@ -931,14 +1116,16 @@ ICACHE_FLASH_ATTR void loop() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   else if (telnetEnabled && telnetClient && telnetClient.available() > 0) {
     c = telnetClient.read();
-    if (c == 255) { 
-       if (telnetClient.available() >= 2) { telnetClient.read(); telnetClient.read(); }
-       return;
+    if (c == 255) {
+      if (telnetClient.available() >= 2) {
+        telnetClient.read();
+        telnetClient.read();
+      }
+      return;
     }
     hasInput = true;
     fromSerial = false;
-  }
-  else if (sshEnabled && sshClient && sshClient.available() > 0) {
+  } else if (sshEnabled && sshClient && sshClient.available() > 0) {
     c = sshClient.read();
     hasInput = true;
     fromSerial = false;
@@ -949,8 +1136,8 @@ ICACHE_FLASH_ATTR void loop() {
   else if (btEnabled && SerialBT.available() > 0) {
     c = SerialBT.read();
     hasInput = true;
-    fromSerial = false; 
-    lastTelnetActivity = millis(); 
+    fromSerial = false;
+    lastTelnetActivity = millis();
   }
 #endif
 
@@ -984,13 +1171,21 @@ ICACHE_FLASH_ATTR void loop() {
         bool isLogin = (strncmp_P(inputBuffer, PSTR("login"), 5) == 0);
         bool isHelp = (strncmp_P(inputBuffer, PSTR("help"), 4) == 0);
         bool isPasswd = (strncmp_P(inputBuffer, PSTR("passwd"), 6) == 0);
-        bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
-        
-        if (!currentAuth && !isLogin && !isHelp && !(needsSetup && isPasswd && fromSerial)) {
+        bool currentAuth =
+            fromSerial ? serialAuthenticated : telnetAuthenticated;
+
+        if (!currentAuth && !isLogin && !isHelp &&
+            !(needsSetup && isPasswd && fromSerial)) {
           kprintln(F("--- ACCESS DENIED ---"));
           kprintln(F("System is protected. Please type: login [your_password]"));
           if (needsSetup) kprintln(F("Initial setup: type 'passwd [new_pass]' first via Serial."));
         } else {
+          if (inputLen > 0) {
+            strncpy(cmdHistory[historyWriteIdx], inputBuffer, MAX_INPUT_LEN - 1);
+            historyWriteIdx = (historyWriteIdx + 1) % MAX_HISTORY;
+            if (historyCount < MAX_HISTORY) historyCount++;
+            historyViewIdx = -1;
+          }
           parseAndExecute(inputBuffer, fromSerial);
         }
 
@@ -1002,15 +1197,33 @@ ICACHE_FLASH_ATTR void loop() {
         printPrompt();
       }
     } else {
-    
+
       if (c == 0x1b) {
         inEscSeq = true;
         return;
       }
+      static int escState = 0;
       if (inEscSeq) {
-        
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '~') {
+        if (c == '[') { escState = 1; return; }
+        if (escState == 1) {
+          if (c == 'A' || c == 'B') {
+            if (historyCount > 0) {
+              if (c == 'A') {
+                if (historyViewIdx == -1) historyViewIdx = (historyWriteIdx + MAX_HISTORY - 1) % MAX_HISTORY;
+                else historyViewIdx = (historyViewIdx + MAX_HISTORY - 1) % MAX_HISTORY;
+              } else {
+                if (historyViewIdx != -1) historyViewIdx = (historyViewIdx + 1) % MAX_HISTORY;
+              }
+              while (inputLen > 0) { kprint(F("\b \b")); inputLen--; }
+              strncpy(inputBuffer, cmdHistory[historyViewIdx], MAX_INPUT_LEN - 1);
+              inputLen = strlen(inputBuffer);
+              kprint(inputBuffer);
+            }
+          }
+          escState = 0; inEscSeq = false;
+        } else if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '~') {
           inEscSeq = false;
+          escState = 0;
         }
         return;
       }
@@ -1043,12 +1256,12 @@ ICACHE_FLASH_ATTR void loop() {
         inputBuffer[inputLen] = c;
         inputLen++;
       } else {
-        
+
         static unsigned long lastWarn = 0;
         if (millis() - lastWarn > 2000) {
           kprintln(F("\n[!] Error: Buffer Full! (Max 192 chars)"));
           printPrompt();
-          kprint(inputBuffer); 
+          kprint(inputBuffer);
           lastWarn = millis();
         }
       }
@@ -1163,9 +1376,12 @@ ICACHE_FLASH_ATTR bool isTelnetSafeCommand(const char *cmd) {
     return true;
   if (strcmp_P(cmd, PSTR("ping")) == 0)
     return true;
-  if (strcmp_P(cmd, PSTR("ifconfig")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("login")) == 0) return true;
-  if (strcmp_P(cmd, PSTR("logout")) == 0) return true;
+  if (strcmp_P(cmd, PSTR("ifconfig")) == 0)
+    return true;
+  if (strcmp_P(cmd, PSTR("login")) == 0)
+    return true;
+  if (strcmp_P(cmd, PSTR("logout")) == 0)
+    return true;
   return false;
 }
 
@@ -1177,22 +1393,25 @@ ICACHE_FLASH_ATTR void expandVars(char *line) {
       p++;
       char key[ENV_KEY_LEN] = {0};
       int ki = 0;
-      while (isalnum(*p) && ki < ENV_KEY_LEN - 1) key[ki++] = *p++;
+      while (isalnum(*p) && ki < ENV_KEY_LEN - 1)
+        key[ki++] = *p++;
       for (int i = 0; i < MAX_ENV; i++) {
         if (envTable[i].active && strcmp(envTable[i].key, key) == 0) {
           char *v = envTable[i].val;
-          while (*v && (t - temp < MAX_INPUT_LEN - 1)) *t++ = *v++;
+          while (*v && (t - temp < MAX_INPUT_LEN - 1))
+            *t++ = *v++;
           break;
         }
       }
-    } else *t++ = *p++;
+    } else
+      *t++ = *p++;
   }
   *t = '\0';
   strcpy(line, temp);
 }
 
 ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial) {
-  expandVars(line); 
+  expandVars(line);
   char *p = line;
   char *cmd_start = p;
   bool inQuotes = false;
@@ -1205,18 +1424,21 @@ ICACHE_FLASH_ATTR void parseAndExecute(char *line, bool fromSerial) {
         *p = '\0';
         executeCommand(cmd_start, fromSerial);
         cmd_start = p + 1;
-        while (*cmd_start == ' ') cmd_start++;
+        while (*cmd_start == ' ')
+          cmd_start++;
       } else if (p[0] == '&' && p[1] == '&') {
         *p = '\0';
         executeCommand(cmd_start, fromSerial);
-        p++; 
+        p++;
         cmd_start = p + 1;
-        while (*cmd_start == ' ') cmd_start++;
+        while (*cmd_start == ' ')
+          cmd_start++;
       }
     }
     p++;
   }
-  if (*cmd_start && *cmd_start != ' ') executeCommand(cmd_start, fromSerial);
+  if (*cmd_start && *cmd_start != ' ')
+    executeCommand(cmd_start, fromSerial);
 }
 
 ICACHE_FLASH_ATTR void kPulse() {
@@ -1236,13 +1458,14 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 
 ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   kPulse();
-  
+
   char *cmd = line;
   char *args = NULL;
   int i, sp, pin, count;
 
   char *redir = strchr(line, '>');
-  if (redir) *redir = '\0'; 
+  if (redir)
+    *redir = '\0';
 
   char *firstSpace = strchr(cmd, ' ');
   if (firstSpace) {
@@ -1261,8 +1484,9 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
   bool isLogin = (strcmp_P(cmd, PSTR("login")) == 0);
   bool isHelp = (strcmp_P(cmd, PSTR("help")) == 0);
-  
-  if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 && !isTelnetSafeCommand(cmd)) {
+
+  if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 &&
+      !isTelnetSafeCommand(cmd)) {
     if (!fromSerial || !serialAuthenticated) {
       kprintln(F("--- ACCESS DENIED ---"));
       kprintln(F("System is protected. Please type: login [your_password]"));
@@ -1271,8 +1495,10 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   }
 
   if (!currentAuth && shellDepth == 0) {
-    if (strchr(args, ';') || strchr(args, '&') || strchr(args, '|') || strchr(args, '`')) {
-      kprintln(F("Error: Command injection characters detected. Access Denied."));
+    if (strchr(args, ';') || strchr(args, '&') || strchr(args, '|') ||
+        strchr(args, '`')) {
+      kprintln(
+          F("Error: Command injection characters detected. Access Denied."));
       return;
     }
   }
@@ -1283,12 +1509,18 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       return;
     }
     char *filename = redir + 1;
-    while (*filename == ' ') filename++;
-    
+    while (*filename == ' ')
+      filename++;
+
     int found = -1, empty = -1;
     for (int j = 0; j < MAX_FILES; j++) {
-      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) { found = j; break; }
-      if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1) empty = j;
+      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 &&
+          strcmp(vfs[j].parentDir, currentPath) == 0) {
+        found = j;
+        break;
+      }
+      if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1)
+        empty = j;
     }
     int target = (found != -1) ? found : empty;
     if (target != -1) {
@@ -1297,7 +1529,10 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         return;
       }
       if (found == -1) {
-        if (!isValidFsName(filename)) { kprintln(F("Error: Invalid filename.")); return; }
+        if (!isValidFsName(filename)) {
+          kprintln(F("Error: Invalid filename."));
+          return;
+        }
         strncpy(vfs[target].name, filename, NAME_LEN - 1);
         vfs[target].flags = FLAG_ACTIVE;
         vfs[target].mode = 0644;
@@ -1311,18 +1546,27 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
 
   if (strcmp_P(cmd, PSTR("on")) == 0) {
     pin = atoi_safe(args);
-    if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin 0-19")); return; }
+    if (pin < 0 || pin > 19) {
+      Serial.println(F("Error: Pin 0-19"));
+      return;
+    }
     fastPinMode(pin, OUTPUT);
     fastDigitalWrite(pin, HIGH);
-    kprint(F("Pin ")); kprint(pin); kprintln(F(" is now HIGH (ON)"));
+    kprint(F("Pin "));
+    kprint(pin);
+    kprintln(F(" is now HIGH (ON)"));
     return;
-  }
-  else if (strcmp_P(cmd, PSTR("off")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("off")) == 0) {
     pin = atoi_safe(args);
-    if (pin < 0 || pin > 19) { Serial.println(F("Error: Pin 0-19")); return; }
+    if (pin < 0 || pin > 19) {
+      Serial.println(F("Error: Pin 0-19"));
+      return;
+    }
     fastPinMode(pin, OUTPUT);
     fastDigitalWrite(pin, LOW);
-    kprint(F("Pin ")); kprint(pin); kprintln(F(" is now LOW (OFF)"));
+    kprint(F("Pin "));
+    kprint(pin);
+    kprintln(F(" is now LOW (OFF)"));
     return;
   }
 
@@ -1343,13 +1587,13 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     char mode[8] = "";
     char *argPtr = args + sp + 1;
     while (*argPtr == ' ')
-      argPtr++; 
+      argPtr++;
     strncpy(mode, argPtr, 7);
     mode[7] = '\0';
     for (int k = 0; k < 7; k++) {
       if (mode[k] <= 32)
         mode[k] = '\0';
-    } 
+    }
     toLowercase(mode);
     if (strcmp_P(mode, PSTR("out")) == 0) {
       pinMode(pin, OUTPUT);
@@ -1430,7 +1674,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     for (int k = 0; k < 7; k++) {
       if (action[k] <= 32)
         action[k] = '\0';
-    } 
+    }
     toLowercase(action);
 
     if (strcmp_P(pinStr, PSTR("vixa")) == 0) {
@@ -1441,8 +1685,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         count = 50;
       addDmesg(F("LED disco mode activated"));
       Serial.println(F("LED DISCO MODE!"));
-      
-    
+
       int safePins[] = {5, 4, 0, 2, 14, 12, 13, 15};
       int numSafePins = 8;
 
@@ -1453,7 +1696,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
           digitalWrite(p, HIGH);
           delay(50);
           digitalWrite(p, LOW);
-          yield(); 
+          yield();
         }
       }
       Serial.println(F("Disco finished!"));
@@ -1495,21 +1738,27 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     bool isLong = (strcmp_P(args, PSTR("-l")) == 0);
 
     for (j = 0; j < MAX_FILES; j++) {
-      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].parentDir, currentPath) == 0) {
+      if ((vfs[j].flags & FLAG_ACTIVE) &&
+          strcmp(vfs[j].parentDir, currentPath) == 0) {
         if (isLong) {
           printPermissions(vfs[j].mode, (vfs[j].flags & FLAG_ISDIR));
           kprint(F(" "));
           kprint(vfs[j].ownerId == 0 ? F("root  ") : F("guest "));
-          kprint((unsigned long)strlen(vfs[j].content)); kprint(F(" "));
-          if (vfs[j].flags & FLAG_ISDIR) kprintColor(CLR_BLU);
+          kprint((unsigned long)strlen(vfs[j].content));
+          kprint(F(" "));
+          if (vfs[j].flags & FLAG_ISDIR)
+            kprintColor(CLR_BLU);
           kprint(vfs[j].name);
-          if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
+          if (vfs[j].flags & FLAG_ISDIR)
+            kprint(F("/"));
           kprintColor(CLR_RST);
           kprintln();
         } else {
-          if (vfs[j].flags & FLAG_ISDIR) kprintColor(CLR_BLU);
+          if (vfs[j].flags & FLAG_ISDIR)
+            kprintColor(CLR_BLU);
           kprint(vfs[j].name);
-          if (vfs[j].flags & FLAG_ISDIR) kprint(F("/"));
+          if (vfs[j].flags & FLAG_ISDIR)
+            kprint(F("/"));
           kprintColor(CLR_RST);
           kprint(F("  "));
         }
@@ -1520,8 +1769,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     if (strcmp(currentPath, "/dev/") == 0) {
       if (isLong)
         kprintln(F("crw-rw-rw- root null\ncrw-rw-rw- root led\ncrw-rw-rw- root "
-                   "a0\ncrw-rw-rw- root a1\ncrw-rw-rw- root a2\ncrw-rw-rw- "
-                   "root a3\ncrw-rw-rw- root a4\ncrw-rw-rw- root a5"));
+                   "a0\ncrw-rw-rw- root a1\ncrw-rw-rw- root a2\ncrw-rw-rw- root "
+                   "a3\ncrw-rw-rw- root a4\ncrw-rw-rw- root a5"));
       else
         kprint(F("null  led  a0  a1  a2  a3  a4  a5  "));
       empty = 0;
@@ -1534,27 +1783,38 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     char *user = args;
     char *filename = strchr(args, ' ');
     if (filename) {
-      *filename = '\0'; filename++;
+      *filename = '\0';
+      filename++;
       uint8_t newOwner = 255;
-      if (strcmp_P(user, PSTR("root")) == 0) newOwner = 0;
-      else if (strcmp_P(user, PSTR("guest")) == 0) newOwner = 1;
-      
-      if (newOwner == 255) { kprintln(F("User not found. Use: root, guest")); return; }
-      
+      if (strcmp_P(user, PSTR("root")) == 0)
+        newOwner = 0;
+      else if (strcmp_P(user, PSTR("guest")) == 0)
+        newOwner = 1;
+
+      if (newOwner == 255) {
+        kprintln(F("User not found. Use: root, guest"));
+        return;
+      }
+
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
-        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(filename, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
-          uint8_t currentUser = (fromSerial ? serialAuthenticated : telnetAuthenticated) ? 0 : 1;
+        if ((vfs[j].flags & FLAG_ACTIVE) &&
+            strcmp(filename, vfs[j].name) == 0 &&
+            strcmp(vfs[j].parentDir, currentPath) == 0) {
+          uint8_t currentUser =
+              (fromSerial ? serialAuthenticated : telnetAuthenticated) ? 0 : 1;
           if (currentUser != 0) {
             kprintln(F("Only root can change ownership."));
           } else {
             vfs[j].ownerId = newOwner;
             kprintln(F("Ownership updated."));
           }
-          found = 1; break;
+          found = 1;
+          break;
         }
       }
-      if (!found) kprintln(F("File not found."));
+      if (!found)
+        kprintln(F("File not found."));
     } else {
       kprintln(F("Usage: chown [root/guest] [file]"));
     }
@@ -1590,8 +1850,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   } else if (strcmp_P(cmd, PSTR("mkdir")) == 0 ||
              strcmp_P(cmd, PSTR("touch")) == 0) {
     if (!isValidFsName(args)) {
-      kprintln(
-          F("Invalid name. Use 1-9 printable chars without / or spaces."));
+      kprintln(F("Invalid name. Use 1-9 printable chars without / or spaces."));
       return;
     }
     int foundSlot = -1, j;
@@ -1655,14 +1914,16 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         break;
       }
     }
-    if (!found) kprintln(F("Script not found."));
+    if (!found)
+      kprintln(F("Script not found."));
   } else if (strcmp_P(cmd, PSTR("echo")) == 0) {
     int arrow = indexOf(args, " > ");
     if (arrow != -1) {
       args[arrow] = '\0';
       char *text = args;
       char *filename = args + arrow + 3;
-      while (*filename == ' ') filename++;
+      while (*filename == ' ')
+        filename++;
 
       if (strcmp(currentPath, "/dev/") == 0) {
         if (strcmp_P(filename, PSTR("led")) == 0) {
@@ -1729,11 +1990,12 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("File not found."));
   } else if (strcmp_P(cmd, PSTR("info")) == 0) {
     if (args[0] == '\0') {
-       kprintln(F("UniKernel OS v6.14.0"));
-       kprint(F("RAM Free: ")); kprintln(freeMemory());
-       kprintln(F("Automation: Use 'rc.sh' for auto-start scripts."));
-       kprintln(F("Example: echo \"telnet on\" > rc.sh"));
-       return;
+      kprintln(F("UniKernel OS v6.14.0"));
+      kprint(F("RAM Free: "));
+      kprintln(freeMemory());
+      kprintln(F("Automation: Use 'rc.sh' for auto-start scripts."));
+      kprintln(F("Example: echo \"telnet on\" > rc.sh"));
+      return;
     }
     if (strcmp(currentPath, "/dev/") == 0 &&
         (strcmp_P(args, PSTR("null")) == 0 ||
@@ -1752,8 +2014,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         kprint(F("Name: "));
         kprintln(vfs[j].name);
         kprint(F("Type: "));
-        kprintln((vfs[j].flags & FLAG_ISDIR) ? F("Directory")
-                                                   : F("File"));
+        kprintln((vfs[j].flags & FLAG_ISDIR) ? F("Directory") : F("File"));
         kprint(F("Size: "));
         kprint((unsigned long)strlen(vfs[j].content));
         kprintln(F(" bytes"));
@@ -1767,12 +2028,18 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     char *src = args;
     char *dst = strchr(args, ' ');
     if (dst) {
-      *dst = '\0'; dst++;
+      *dst = '\0';
+      dst++;
       int sIdx = -1, dIdx = -1, empty = -1;
       for (int j = 0; j < MAX_FILES; j++) {
-        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(src, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) sIdx = j;
-        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(dst, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) dIdx = j;
-        if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1) empty = j;
+        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(src, vfs[j].name) == 0 &&
+            strcmp(vfs[j].parentDir, currentPath) == 0)
+          sIdx = j;
+        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(dst, vfs[j].name) == 0 &&
+            strcmp(vfs[j].parentDir, currentPath) == 0)
+          dIdx = j;
+        if (!(vfs[j].flags & FLAG_ACTIVE) && empty == -1)
+          empty = j;
       }
       if (sIdx != -1) {
         if (strcmp_P(cmd, PSTR("cp")) == 0) {
@@ -1780,35 +2047,44 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
             vfs[empty] = vfs[sIdx];
             strncpy(vfs[empty].name, dst, NAME_LEN - 1);
             kprintln(F("Copied."));
-          } else kprintln(F("FS full."));
-        } else { 
+          } else
+            kprintln(F("FS full."));
+        } else {
           strncpy(vfs[sIdx].name, dst, NAME_LEN - 1);
           kprintln(F("Moved."));
         }
-      } else kprintln(F("Source not found."));
-    } else kprintln(F("Usage: cp/mv [src] [dst]"));
+      } else
+        kprintln(F("Source not found."));
+    } else
+      kprintln(F("Usage: cp/mv [src] [dst]"));
   } else if (strcmp_P(cmd, PSTR("append")) == 0) {
     char *file = args;
     char *text = strchr(args, ' ');
     if (text) {
-      *text = '\0'; text++;
-      while (*text == ' ') text++;
+      *text = '\0';
+      text++;
+      while (*text == ' ')
+        text++;
 
-     
       int j, found = 0;
       for (j = 0; j < MAX_FILES; j++) {
-        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(file, vfs[j].name) == 0 && strcmp(vfs[j].parentDir, currentPath) == 0) {
+        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(file, vfs[j].name) == 0 &&
+            strcmp(vfs[j].parentDir, currentPath) == 0) {
           int curLen = strlen(vfs[j].content);
           int addLen = strlen(text);
           if (curLen + addLen < CONTENT_LEN - 1) {
             strncat(vfs[j].content, text, CONTENT_LEN - curLen - 1);
             kprintln(F("Appended."));
-          } else kprintln(F("File full."));
-          found = 1; break;
+          } else
+            kprintln(F("File full."));
+          found = 1;
+          break;
         }
       }
-      if (!found) kprintln(F("File not found."));
-    } else kprintln(F("Usage: append [file] [text]"));
+      if (!found)
+        kprintln(F("File not found."));
+    } else
+      kprintln(F("Usage: append [file] [text]"));
   } else if (strcmp_P(cmd, PSTR("rm")) == 0) {
     int j, found = 0;
     for (j = 0; j < MAX_FILES; j++) {
@@ -1862,19 +2138,29 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprint(sec);
     kprintln(F("s"));
 #if defined(ARDUINO_ARCH_AVR)
-    kprint(F("Bare-Metal Ticks: ")); kprintln((unsigned long)system_ticks);
+    kprint(F("Bare-Metal Ticks: "));
+    kprintln((unsigned long)system_ticks);
 #endif
     addDmesg(F("uptime command"));
   } else if (strcmp_P(cmd, PSTR("df")) == 0 ||
              strcmp_P(cmd, PSTR("free")) == 0) {
-    kprint(F("RAM  - Free: ")); kprint(freeMemory()); kprintln(F(" bytes"));
+    kprint(F("RAM  - Free: "));
+    kprint(freeMemory());
+    kprintln(F(" bytes"));
     int usedFiles = 0;
-    for (int j = 0; j < MAX_FILES; j++) if (vfs[j].flags & FLAG_ACTIVE) usedFiles++;
-    kprint(F("VFS  - Used: ")); kprint(usedFiles); kprint(F("/")); kprintln(MAX_FILES);
-    kprint(F("LFS  - Free: ")); 
+    for (int j = 0; j < MAX_FILES; j++)
+      if (vfs[j].flags & FLAG_ACTIVE)
+        usedFiles++;
+    kprint(F("VFS  - Used: "));
+    kprint(usedFiles);
+    kprint(F("/"));
+    kprintln(MAX_FILES);
+    kprint(F("LFS  - Free: "));
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-    FSInfo fs_info; LittleFS.info(fs_info);
-    kprint(fs_info.totalBytes - fs_info.usedBytes); kprintln(F(" bytes"));
+    FSInfo fs_info;
+    LittleFS.info(fs_info);
+    kprint(fs_info.totalBytes - fs_info.usedBytes);
+    kprintln(F(" bytes"));
 #else
     kprintln(F("N/A"));
 #endif
@@ -1884,43 +2170,73 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprint(F("UniKernel ("));
     kprint(BOARD_NAME);
     kprintln(F(")"));
-    kprint(F("Kernel: ")); kprintln(ESP.getSdkVersion());
-    kprint(F("Core: ")); kprintln(ESP.getCoreVersion());
-    kprint(F("CPU: ")); kprint(ESP.getCpuFreqMHz()); kprintln(F(" MHz"));
+    kprint(F("Kernel: "));
+    kprintln(ESP.getSdkVersion());
+    kprint(F("Core: "));
+    kprintln(ESP.getCoreVersion());
+    kprint(F("CPU: "));
+    kprint(ESP.getCpuFreqMHz());
+    kprintln(F(" MHz"));
   } else if (strcmp_P(cmd, PSTR("hwinfo")) == 0) {
-    kprintColor(CLR_CYN); kprintln(F("--- HARDWARE INFORMATION ---"));
-    kprintColor(CLR_WHT); kprint(F("Flash Chip ID: ")); kprintln((unsigned long)ESP.getFlashChipId());
-    kprint(F("Flash Real Size: ")); kprint((unsigned long)ESP.getFlashChipRealSize() / 1024); kprintln(F(" KB"));
-    kprint(F("Flash Speed: ")); kprint((unsigned long)ESP.getFlashChipSpeed() / 1000000); kprintln(F(" MHz"));
-    kprint(F("Free Heap: ")); kprint((unsigned long)ESP.getFreeHeap()); kprintln(F(" bytes"));
-    kprint(F("Sketch Size: ")); kprint((unsigned long)ESP.getSketchSize()); kprintln(F(" bytes"));
-    kprint(F("Free Sketch: ")); kprint((unsigned long)ESP.getFreeSketchSpace()); kprintln(F(" bytes"));
-    kprint(F("Chip VCC: ")); kprint(ESP.getVcc()); kprintln(F(" mV"));
-    kprint(F("Reset: ")); kprintln(ESP.getResetReason());
-    kprint(F("Flash Mode: ")); 
+    kprintColor(CLR_CYN);
+    kprintln(F("--- HARDWARE INFORMATION ---"));
+    kprintColor(CLR_WHT);
+    kprint(F("Flash Chip ID: "));
+    kprintln((unsigned long)ESP.getFlashChipId());
+    kprint(F("Flash Real Size: "));
+    kprint((unsigned long)ESP.getFlashChipRealSize() / 1024);
+    kprintln(F(" KB"));
+    kprint(F("Flash Speed: "));
+    kprint((unsigned long)ESP.getFlashChipSpeed() / 1000000);
+    kprintln(F(" MHz"));
+    kprint(F("Free Heap: "));
+    kprint((unsigned long)ESP.getFreeHeap());
+    kprintln(F(" bytes"));
+    kprint(F("Sketch Size: "));
+    kprint((unsigned long)ESP.getSketchSize());
+    kprintln(F(" bytes"));
+    kprint(F("Free Sketch: "));
+    kprint((unsigned long)ESP.getFreeSketchSpace());
+    kprintln(F(" bytes"));
+    kprint(F("Chip VCC: "));
+    kprint(ESP.getVcc());
+    kprintln(F(" mV"));
+    kprint(F("Reset: "));
+    kprintln(ESP.getResetReason());
+    kprint(F("Flash Mode: "));
     FlashMode_t mode = ESP.getFlashChipMode();
     kprintln(mode == FM_QIO ? "QIO" : (mode == FM_DIO ? "DIO" : "Other"));
 #if defined(ESP32)
-    kprint(F("Bluetooth: ")); kprintln(btEnabled ? F("Online") : F("Offline"));
+    kprint(F("Bluetooth: "));
+    kprintln(btEnabled ? F("Online") : F("Offline"));
 #endif
     kprintColor(CLR_RST);
   } else if (strcmp_P(cmd, PSTR("sleep")) == 0) {
     int sec = atoi_safe(args);
-    if (sec <= 0) sec = 5;
-    kprint(F("Sleep ")); kprint(sec); kprintln(F("s..."));
+    if (sec <= 0)
+      sec = 5;
+    kprint(F("Sleep "));
+    kprint(sec);
+    kprintln(F("s..."));
     delay(100);
     WiFi.mode(WIFI_OFF);
     delay(sec * 1000);
-    WiFi.mode(WIFI_STA); WiFi.begin();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();
     kprintln(F("Woke up."));
   } else if (strcmp_P(cmd, PSTR("delay")) == 0) {
     int ms = atoi_safe(args);
-    if (ms > 0) delay(ms);
+    if (ms > 0)
+      delay(ms);
   } else if (strcmp_P(cmd, PSTR("cpu")) == 0) {
     int freq = atoi_safe(args);
     if (freq == 80 || freq == 160) {
       system_update_cpu_freq(freq);
-      kprint(CLR_YLW); kprint(F("CPU Frequency set to ")); kprint(freq); kprintln(F(" MHz")); kprint(CLR_RST);
+      kprint(CLR_YLW);
+      kprint(F("CPU Frequency set to "));
+      kprint(freq);
+      kprintln(F(" MHz"));
+      kprint(CLR_RST);
     } else {
       kprintln(F("Usage: cpu [80/160]"));
     }
@@ -1988,24 +2304,40 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprint(F(" set to "));
     kprintln(pwmVal);
   } else if (strcmp_P(cmd, PSTR("help")) == 0) {
-    kprintln(F("Files: ls, cd, pwd, mkdir, touch, cat, echo, append, cp, mv, rm, info, save, load, lfs"));
+    kprintln(F("Files: ls, cd, pwd, mkdir, touch, cat, echo, append, cp, mv, "
+               "rm, info, save, load, lfs"));
     kprintln(F("Hardw: on, off, gpio, pinmode, write, read, pwm, i2c, sh"));
-    kprintln(F("Net  : wifi, bt, ifconfig, ping, wget, ntp, telnet, web, ssh, ota, netstat"));
-    kprintln(F("Sys  : login, logout, ps, top, date, uptime, uname, hwinfo, neofetch, firewall, cpu, sleep, dmesg, free, clear, reboot"));
+    kprintln(F("Net  : wifi, bt, ifconfig, ping, wget, ntp, telnet, web, ssh, "
+               "ota, netstat"));
+    kprintln(
+        F("Sys  : login, logout, ps, top, date, uptime, uname, hwinfo, "
+          "neofetch, firewall, cpu, sleep, dmesg, free, clear, reboot, boot"));
   } else if (strcmp_P(cmd, PSTR("top")) == 0) {
     for (int i = 0; i < 5; i++) {
       kprint(F("\x1b[2J\x1b[H"));
-      kprintColor(CLR_CYN); kprintln(F("UniKernel Real-time Monitor"));
-      kprintColor(CLR_WHT); kprint(F("Uptime: ")); kprint(millis() / 1000); kprintln(F("s"));
-      kprint(F("Free Heap: ")); kprint(ESP.getFreeHeap()); kprintln(F(" bytes"));
-      kprint(F("Frag: ")); kprint(ESP.getHeapFragmentation()); kprintln(F("%"));
+      kprintColor(CLR_CYN);
+      kprintln(F("UniKernel Real-time Monitor"));
+      kprintColor(CLR_WHT);
+      kprint(F("Uptime: "));
+      kprint(millis() / 1000);
+      kprintln(F("s"));
+      kprint(F("Free Heap: "));
+      kprint(ESP.getFreeHeap());
+      kprintln(F(" bytes"));
+      kprint(F("Frag: "));
+      kprint(ESP.getHeapFragmentation());
+      kprintln(F("%"));
       kprintln(F("PID  TASK       STATUS"));
       for (int t = 0; t < MAX_TASKS; t++) {
         if (taskTable[t].active) {
-          kprint(t + 1); kprint(F("    ")); kprint(taskTable[t].name); kprintln(F("    ACTIVE"));
+          kprint(t + 1);
+          kprint(F("    "));
+          kprint(taskTable[t].name);
+          kprintln(F("    ACTIVE"));
         }
       }
-      delay(1000); yield();
+      delay(1000);
+      yield();
     }
   } else if (strcmp_P(cmd, PSTR("ota")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
@@ -2019,19 +2351,22 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       EEPROM.put(EEPROM_OTA_PASS_ADDR, newPass);
       EEPROM.commit();
       ArduinoOTA.setPassword(newPass);
-      kprint(F("OTA Password updated to: ")); kprintln(newPass);
+      kprint(F("OTA Password updated to: "));
+      kprintln(newPass);
     } else {
       kprintln(F("Usage: ota [on/setpass new_password]"));
     }
   } else if (strcmp_P(cmd, PSTR("firewall")) == 0) {
     if (strncmp_P(args, PSTR("allow "), 6) == 0) {
       strncpy(whitelistIP, args + 6, 15);
-      kprint(F("Firewall: Only allowing ")); kprintln(whitelistIP);
+      kprint(F("Firewall: Only allowing "));
+      kprintln(whitelistIP);
     } else if (strcmp_P(args, PSTR("reset")) == 0) {
       whitelistIP[0] = '\0';
       kprintln(F("Firewall disabled (All IPs allowed)."));
     } else {
-      kprint(F("Current Whitelist: ")); kprintln(strlen(whitelistIP) > 0 ? whitelistIP : "None");
+      kprint(F("Current Whitelist: "));
+      kprintln(strlen(whitelistIP) > 0 ? whitelistIP : "None");
       kprintln(F("Usage: firewall [allow IP / reset]"));
     }
   } else if (strcmp_P(cmd, PSTR("ssh")) == 0) {
@@ -2048,61 +2383,115 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     if (strncmp_P(args, PSTR("ls"), 2) == 0) {
       Dir dir = LittleFS.openDir("/");
       while (dir.next()) {
-        kprint(dir.fileName()); kprint(F("  ")); kprintln((unsigned long)dir.fileSize());
+        kprint(dir.fileName());
+        kprint(F("  "));
+        kprintln((unsigned long)dir.fileSize());
       }
     } else if (strncmp_P(args, PSTR("format"), 6) == 0) {
-      LittleFS.format(); kprintln(F("LFS Formatted."));
+      LittleFS.format();
+      kprintln(F("LFS Formatted."));
     } else if (strncmp_P(args, PSTR("write "), 6) == 0) {
-       File f = LittleFS.open("/data.txt", "a");
-       if(f) { f.println(args + 6); f.close(); kprintln(F("Written to LFS.")); }
+      File f = LittleFS.open("/data.txt", "a");
+      if (f) {
+        f.println(args + 6);
+        f.close();
+        kprintln(F("Written to LFS."));
+      }
     } else {
       kprintln(F("Usage: lfs [ls/format/write text]"));
     }
   } else if (strcmp_P(cmd, PSTR("neofetch")) == 0) {
-    kprintColor(CLR_YLW); kprintln(F("       .---.          root@unikernel"));
-    kprintColor(CLR_YLW); kprintln(F("      /     \\         --------------"));
-    kprintColor(CLR_YLW); kprint(F("     |  (O)  |        ")); kprintColor(CLR_WHT); kprintln(F("OS: UniKernel x86_esp"));
-    kprintColor(CLR_YLW); kprint(F("      \\     /         ")); kprintColor(CLR_WHT); kprint(F("Host: ")); kprintln(BOARD_NAME);
-    kprintColor(CLR_YLW); kprint(F("       '---'          ")); kprintColor(CLR_WHT); kprintln(F("Kernel: 6.14.0-unikernel"));
-    kprintColor(CLR_YLW); kprint(F("     /|     |\\        ")); kprintColor(CLR_WHT); kprint(F("Uptime: ")); kprint(millis()/1000); kprintln(F("s"));
-    kprintColor(CLR_YLW); kprint(F("    / |     | \\       ")); kprintColor(CLR_WHT); kprintln(F("Shell: UniShell 2.0"));
-    kprintColor(CLR_YLW); kprint(F("   /  |     |  \\      ")); kprintColor(CLR_WHT); kprint(F("Memory: ")); kprint(freeMemory()); kprintln(F(" free"));
-    kprintColor(CLR_YLW); kprint(F("  '---'-----'---'     ")); kprintColor(CLR_WHT); kprint(F("VFS: ")); kprint(MAX_FILES); kprintln(F(" slots"));
+    kprintColor(CLR_YLW);
+    kprintln(F("       .---.          root@unikernel"));
+    kprintColor(CLR_YLW);
+    kprintln(F("      /     \\         --------------"));
+    kprintColor(CLR_YLW);
+    kprint(F("     |  (O)  |        "));
+    kprintColor(CLR_WHT);
+    kprintln(F("OS: UniKernel x86_esp"));
+    kprintColor(CLR_YLW);
+    kprint(F("      \\     /         "));
+    kprintColor(CLR_WHT);
+    kprint(F("Host: "));
+    kprintln(BOARD_NAME);
+    kprintColor(CLR_YLW);
+    kprint(F("       '---'          "));
+    kprintColor(CLR_WHT);
+    kprintln(F("Kernel: 6.14.0-unikernel"));
+    kprintColor(CLR_YLW);
+    kprint(F("     /|     |\\        "));
+    kprintColor(CLR_WHT);
+    kprint(F("Uptime: "));
+    kprint(millis() / 1000);
+    kprintln(F("s"));
+    kprintColor(CLR_YLW);
+    kprint(F("    / |     | \\       "));
+    kprintColor(CLR_WHT);
+    kprintln(F("Shell: UniShell 2.0"));
+    kprintColor(CLR_YLW);
+    kprint(F("   /  |     |  \\      "));
+    kprintColor(CLR_WHT);
+    kprint(F("Memory: "));
+    kprint(freeMemory());
+    kprintln(F(" free"));
+    kprintColor(CLR_YLW);
+    kprint(F("  '---'-----'---'     "));
+    kprintColor(CLR_WHT);
+    kprint(F("VFS: "));
+    kprint(MAX_FILES);
+    kprintln(F(" slots"));
     kprintln(F(""));
     kprint(F("  "));
-    kprintColor(CLR_RED); kprint(F("### "));
-    kprintColor(CLR_GRN); kprint(F("### "));
-    kprintColor(CLR_YLW); kprint(F("### "));
-    kprintColor(CLR_BLU); kprint(F("### "));
-    kprintColor(CLR_MAG); kprint(F("### "));
-    kprintColor(CLR_CYN); kprint(F("### "));
-    kprintColor(CLR_WHT); kprintln(F("###"));
+    kprintColor(CLR_RED);
+    kprint(F("### "));
+    kprintColor(CLR_GRN);
+    kprint(F("### "));
+    kprintColor(CLR_YLW);
+    kprint(F("### "));
+    kprintColor(CLR_BLU);
+    kprint(F("### "));
+    kprintColor(CLR_MAG);
+    kprint(F("### "));
+    kprintColor(CLR_CYN);
+    kprint(F("### "));
+    kprintColor(CLR_WHT);
+    kprintln(F("###"));
     kprintColor(CLR_RST);
   } else if (strcmp_P(cmd, PSTR("export")) == 0) {
     char *key = args;
     char *val = strchr(args, '=');
     if (val) {
-      *val = '\0'; val++;
+      *val = '\0';
+      val++;
       int found = -1;
       for (int i = 0; i < MAX_ENV; i++) {
-        if (envTable[i].active && strcmp(envTable[i].key, key) == 0) { found = i; break; }
-        if (!envTable[i].active && found == -1) found = i;
+        if (envTable[i].active && strcmp(envTable[i].key, key) == 0) {
+          found = i;
+          break;
+        }
+        if (!envTable[i].active && found == -1)
+          found = i;
       }
       if (found != -1) {
-        strncpy(envTable[found].key, key, ENV_KEY_LEN-1);
-        strncpy(envTable[found].val, val, ENV_VAL_LEN-1);
+        strncpy(envTable[found].key, key, ENV_KEY_LEN - 1);
+        strncpy(envTable[found].val, val, ENV_VAL_LEN - 1);
         envTable[found].active = true;
         kprintln(F("Var set."));
-      } else kprintln(F("Env full."));
-    } else kprintln(F("Usage: export key=val"));
+      } else
+        kprintln(F("Env full."));
+    } else
+      kprintln(F("Usage: export key=val"));
   } else if (strcmp_P(cmd, PSTR("env")) == 0) {
     for (int i = 0; i < MAX_ENV; i++) {
       if (envTable[i].active) {
-        kprint(envTable[i].key); kprint(F("=")); kprintln(envTable[i].val);
+        kprint(envTable[i].key);
+        kprint(F("="));
+        kprintln(envTable[i].val);
       }
     }
   } else if (strcmp_P(cmd, PSTR("ntp")) == 0) {
-    if (!checkWiFi()) return;
+    if (!checkWiFi())
+      return;
     kprintln(F("Syncing time..."));
     configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
   } else if (strcmp_P(cmd, PSTR("cron")) == 0) {
@@ -2113,36 +2502,54 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         int m = atoi_safe(mPtr + 1);
         char *cPtr = strchr(mPtr + 1, ' ');
         if (cPtr) {
-          while (*cPtr == ' ') cPtr++;
+          while (*cPtr == ' ')
+            cPtr++;
           int found = -1;
-          for (int i = 0; i < MAX_CRON; i++) if (!cronTable[i].active) { found = i; break; }
+          for (int i = 0; i < MAX_CRON; i++)
+            if (!cronTable[i].active) {
+              found = i;
+              break;
+            }
           if (found != -1) {
-            cronTable[found].h = h; cronTable[found].m = m;
+            cronTable[found].h = h;
+            cronTable[found].m = m;
             strncpy(cronTable[found].cmd, cPtr, 31);
             cronTable[found].active = true;
             kprintln(F("Cron added."));
-          } else kprintln(F("Cron full."));
+          } else
+            kprintln(F("Cron full."));
         }
       }
     } else if (strcmp_P(args, PSTR("list")) == 0) {
       for (int i = 0; i < MAX_CRON; i++) {
         if (cronTable[i].active) {
-          kprint(i); kprint(F("> ")); kprint(cronTable[i].h); kprint(F(":"));
-          if (cronTable[i].m < 10) kprint(F("0"));
-          kprint(cronTable[i].m); kprint(F(" -> ")); kprintln(cronTable[i].cmd);
+          kprint(i);
+          kprint(F("> "));
+          kprint(cronTable[i].h);
+          kprint(F(":"));
+          if (cronTable[i].m < 10)
+            kprint(F("0"));
+          kprint(cronTable[i].m);
+          kprint(F(" -> "));
+          kprintln(cronTable[i].cmd);
         }
       }
     } else if (strncmp_P(args, PSTR("rm "), 3) == 0) {
       int id = atoi_safe(args + 3);
-      if (id >= 0 && id < MAX_CRON) { cronTable[id].active = false; kprintln(F("Removed.")); }
+      if (id >= 0 && id < MAX_CRON) {
+        cronTable[id].active = false;
+        kprintln(F("Removed."));
+      }
     } else {
       kprintln(F("Usage: cron [add HH:MM cmd / list / rm ID]"));
     }
   } else if (strcmp_P(cmd, PSTR("color")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
-      useColor = true; kprintln(F("Color UI Enabled."));
+      useColor = true;
+      kprintln(F("Color UI Enabled."));
     } else {
-      useColor = false; kprintln(F("Color UI Disabled."));
+      useColor = false;
+      kprintln(F("Color UI Disabled."));
     }
   } else if (strcmp_P(cmd, PSTR("login")) == 0) {
     if (args[0] == '\0') {
@@ -2202,6 +2609,22 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       telnetAuthenticated = false;
     }
     kprintln(F("Logged out."));
+  } else if (strcmp_P(cmd, PSTR("exit")) == 0) {
+    if (fromSerial) {
+      serialAuthenticated = false;
+      kprintln(F("Logged out from Serial."));
+    } else {
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
+      telnetAuthenticated = false;
+      if (telnetClient && telnetClient.connected()) {
+        telnetClient.println(F("Closing connection. Goodbye!"));
+        telnetClient.stop();
+      }
+#endif
+#if defined(ESP32)
+      if (btEnabled && SerialBT.hasClient()) SerialBT.println(F("Exit command received."));
+#endif
+    }
   } else if (strcmp_P(cmd, PSTR("passwd")) == 0) {
     if (args[0] == '\0' || strlen(args) < 4) {
       kprintln(F("Usage: passwd [min 4 chars]"));
@@ -2228,11 +2651,15 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   } else if (strcmp_P(cmd, PSTR("telnet")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
       int retry = 5;
-      while (WiFi.status() != WL_CONNECTED && retry > 0) { delay(1000); retry--; yield(); }
+      while (WiFi.status() != WL_CONNECTED && retry > 0) {
+        delay(1000);
+        retry--;
+        yield();
+      }
       telnetEnabled = true;
       telnetServer.begin();
       kprintln(F("NetShell (Telnet) Enabled."));
-      kprint(F("Listening on: ")); 
+      kprint(F("Listening on: "));
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
       kprintln(WiFi.localIP());
 #else
@@ -2240,7 +2667,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
 #endif
     } else if (strcmp_P(args, PSTR("off")) == 0) {
       telnetEnabled = false;
-      if (telnetClient) telnetClient.stop();
+      if (telnetClient)
+        telnetClient.stop();
       telnetServer.stop();
       kprintln(F("NetShell (Telnet) Disabled."));
     }
@@ -2249,20 +2677,29 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprintln(F("0    kernel    0         -         RUNNING"));
     for (int t = 0; t < MAX_TASKS; t++) {
       if (taskTable[t].active) {
-        kprint(t + 1); kprint(F("    "));
-        kprint(taskTable[t].name); kprint(F("    "));
-        kprint(taskTable[t].interval); kprint(F("       "));
-        kprint(taskTable[t].executionCount); kprint(F("         "));
+        kprint(t + 1);
+        kprint(F("    "));
+        kprint(taskTable[t].name);
+        kprint(F("    "));
+        kprint(taskTable[t].interval);
+        kprint(F("       "));
+        kprint(taskTable[t].executionCount);
+        kprint(F("         "));
         kprintln(F("ACTIVE"));
       }
     }
-    kprint(F("Free Heap: ")); kprintln(freeMemory());
+    kprint(F("Free Heap: "));
+    kprintln(freeMemory());
   } else if (strcmp_P(cmd, PSTR("netstat")) == 0) {
     kprintln(F("Active Services:"));
-    kprint(F("Telnet : ")); kprintln(telnetEnabled ? F("ON (Port 23)") : F("OFF"));
-    kprint(F("Web    : ")); kprintln(webEnabled ? F("ON (Port 80)") : F("OFF"));
-    kprint(F("SSH    : ")); kprintln(sshEnabled ? F("ON (Port 22)") : F("OFF"));
-    kprint(F("OTA    : ")); kprintln(F("ON (Port 8266)"));
+    kprint(F("Telnet : "));
+    kprintln(telnetEnabled ? F("ON (Port 23)") : F("OFF"));
+    kprint(F("Web    : "));
+    kprintln(webEnabled ? F("ON (Port 80)") : F("OFF"));
+    kprint(F("SSH    : "));
+    kprintln(sshEnabled ? F("ON (Port 22)") : F("OFF"));
+    kprint(F("OTA    : "));
+    kprintln(F("ON (Port 8266)"));
   } else if (strcmp_P(cmd, PSTR("kill")) == 0) {
     int pid = atoi_safe(args);
     if (pid > 0 && pid <= MAX_TASKS) {
@@ -2296,10 +2733,63 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     } else {
       kprintln(F("Usage: bg [blink]"));
     }
+  } else if (strcmp_P(cmd, PSTR("boot")) == 0) {
+    if (args[0] == '\0' || strcmp_P(args, PSTR("list")) == 0) {
+      char currentBoot[NAME_LEN];
+      EEPROM.get(EEPROM_BOOT_FILE_ADDR, currentBoot);
+      if (currentBoot[0] == 0xFF || currentBoot[0] == '\0') strcpy(currentBoot, "0rc.sh");
+      kprint(F("Active boot file: ")); kprintln(currentBoot);
+      kprintln(F("Available profiles:"));
+      for (int i = 0; i < MAX_FILES; i++) {
+        if ((vfs[i].flags & FLAG_ACTIVE) && strstr(vfs[i].name, "rc.sh")) {
+          kprint(F("  - ")); kprintln(vfs[i].name);
+        }
+      }
+      kprintln(F("Usage: boot [filename | list | save <0-9> | reset]"));
+      return;
+    }
+    if (strcmp_P(args, PSTR("reset")) == 0) {
+      char empty[NAME_LEN]; memset(empty, 0, NAME_LEN);
+      EEPROM.put(EEPROM_BOOT_FILE_ADDR, empty);
+#if defined(ESP8266) || defined(ESP32)
+      EEPROM.commit();
+#endif
+      kprintln(F("Boot reset to 0rc.sh"));
+    } else if (strncmp_P(args, PSTR("save "), 5) == 0) {
+      char profileName[NAME_LEN];
+      snprintf(profileName, NAME_LEN, "%src.sh", args + 5);
+      char wifiCmd[CONTENT_LEN];
+      snprintf(wifiCmd, CONTENT_LEN, "wifi connect %s %s; waitwifi; telnet on; web on", WiFi.SSID().c_str(), WiFi.psk().c_str());
+      
+      int target = -1;
+      for (int i = 0; i < MAX_FILES; i++) {
+        if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, profileName) == 0) { target = i; break; }
+        if (!(vfs[i].flags & FLAG_ACTIVE) && target == -1) target = i;
+      }
+      if (target != -1) {
+        strncpy(vfs[target].name, profileName, NAME_LEN-1);
+        strncpy(vfs[target].content, wifiCmd, CONTENT_LEN-1);
+        vfs[target].flags = FLAG_ACTIVE;
+        vfs[target].mode = 0644;
+        strncpy(vfs[target].parentDir, "/", PATH_LEN-1);
+        kprint(F("Saved current WiFi to ")); kprintln(profileName);
+      }
+    } else {
+      if (strlen(args) >= NAME_LEN) { kprintln(F("Error: Name too long.")); return; }
+      char buf[NAME_LEN];
+      memset(buf, 0, NAME_LEN);
+      strncpy(buf, args, NAME_LEN - 1);
+      EEPROM.put(EEPROM_BOOT_FILE_ADDR, buf);
+#if defined(ESP8266) || defined(ESP32)
+      EEPROM.commit();
+#endif
+      kprint(F("Boot profile set to: ")); kprintln(buf);
+    }
   }
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   else if (strcmp_P(cmd, PSTR("ping")) == 0) {
-    if (!checkWiFi()) return;
+    if (!checkWiFi())
+      return;
     const char *host = (args[0] == '\0') ? "8.8.8.8" : args;
     kprint(F("Pinging "));
     kprintln(host);
@@ -2311,7 +2801,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Failed: Host unreachable."));
     }
   } else if (strcmp_P(cmd, PSTR("wget")) == 0) {
-    if (!checkWiFi()) return;
+    if (!checkWiFi())
+      return;
     char *url = args;
     char *file = NULL;
     for (int i = 0; url[i] != '\0'; i++) {
@@ -2440,20 +2931,33 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Usage: wifi [connect/scan/status/reset/off]"));
     }
   } else if (strcmp_P(cmd, PSTR("ifconfig")) == 0) {
-    kprint(F("SSID: ")); kprintln(WiFi.SSID());
-    kprint(F("RSSI: ")); kprint(WiFi.RSSI()); kprintln(F(" dBm"));
-    kprint(F("IP:   ")); kprintln(WiFi.localIP());
-    kprint(F("GW:   ")); kprintln(WiFi.gatewayIP());
-    kprint(F("MAC:  ")); kprintln(WiFi.macAddress());
+    kprint(F("SSID: "));
+    kprintln(WiFi.SSID());
+    kprint(F("RSSI: "));
+    kprint(WiFi.RSSI());
+    kprintln(F(" dBm"));
+    kprint(F("IP:   "));
+    kprintln(WiFi.localIP());
+    kprint(F("GW:   "));
+    kprintln(WiFi.gatewayIP());
+    kprint(F("MAC:  "));
+    kprintln(WiFi.macAddress());
   } else if (strcmp_P(cmd, PSTR("web")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
       int retry = 5;
-      while (WiFi.status() != WL_CONNECTED && retry > 0) { delay(1000); retry--; yield(); }
-      if (WiFi.status() != WL_CONNECTED) { kprintln(F("Web: Waiting for WiFi...")); }
+      while (WiFi.status() != WL_CONNECTED && retry > 0) {
+        delay(1000);
+        retry--;
+        yield();
+      }
+      if (WiFi.status() != WL_CONNECTED) {
+        kprintln(F("Web: Waiting for WiFi..."));
+      }
       webEnabled = true;
-      setupWebServer(); 
+      setupWebServer();
       kprintln(F("Web Dashboard Enabled."));
-      kprint(F("URL: http://")); kprintln(WiFi.localIP());
+      kprint(F("URL: http://"));
+      kprintln(WiFi.localIP());
     } else if (strcmp_P(args, PSTR("off")) == 0) {
       webEnabled = false;
       webServer.stop();
@@ -2470,8 +2974,10 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       if (SerialBT.begin(name)) {
         btEnabled = true;
         addDmesg(F("Bluetooth enabled"));
-        kprint(F("Bluetooth ON. Name: ")); kprintln(name);
-      } else kprintln(F("Error: BT Init failed."));
+        kprint(F("Bluetooth ON. Name: "));
+        kprintln(name);
+      } else
+        kprintln(F("Error: BT Init failed."));
     } else if (strcmp_P(args, PSTR("off")) == 0) {
       SerialBT.end();
       btEnabled = false;
@@ -2481,12 +2987,16 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       if (btEnabled) {
         SerialBT.println(args + 6);
         kprintln(F("Sent via BT."));
-      } else kprintln(F("Error: BT not enabled."));
+      } else
+        kprintln(F("Error: BT not enabled."));
     } else if (strcmp_P(args, PSTR("status")) == 0) {
-      kprint(F("Bluetooth: ")); kprintln(btEnabled ? F("ENABLED") : F("DISABLED"));
+      kprint(F("Bluetooth: "));
+      kprintln(btEnabled ? F("ENABLED") : F("DISABLED"));
       if (btEnabled) {
-        kprint(F("Device: ")); kprintln(BOARD_NAME);
-        kprint(F("Connected: ")); kprintln(SerialBT.hasClient() ? F("YES") : F("NO"));
+        kprint(F("Device: "));
+        kprintln(BOARD_NAME);
+        kprint(F("Connected: "));
+        kprintln(SerialBT.hasClient() ? F("YES") : F("NO"));
       }
     } else {
       kprintln(F("Usage: bt [on (name)/off/write text/status]"));
@@ -2530,7 +3040,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
           kprintln(hexBuf);
           nDevices++;
         }
-        yield(); 
+        yield();
       }
       if (nDevices == 0)
         kprintln(F("No devices."));
@@ -2545,15 +3055,26 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       int m = (s / 60) % 60;
       int sec = s % 60;
       kprint(F("Uptime Clock: "));
-      if (h < 10) kprint("0"); kprint(h); kprint(":");
-      if (m < 10) kprint("0"); kprint(m); kprint(":");
-      if (sec < 10) kprint("0"); kprintln(sec);
+      if (h < 10)
+        kprint("0");
+      kprint(h);
+      kprint(":");
+      if (m < 10)
+        kprint("0");
+      kprint(m);
+      kprint(":");
+      if (sec < 10)
+        kprint("0");
+      kprintln(sec);
     } else {
-      kprint(F("Local Date: ")); kprintln(ctime(&now));
+      kprint(F("Local Date: "));
+      kprintln(ctime(&now));
     }
-  } else if (strcmp_P(cmd, PSTR("sleep")) == 0 || strcmp_P(cmd, PSTR("delay")) == 0) {
+  } else if (strcmp_P(cmd, PSTR("sleep")) == 0 ||
+             strcmp_P(cmd, PSTR("delay")) == 0) {
     int ms = atoi_safe(args);
-    if (ms <= 0) ms = 1000;
+    if (ms <= 0)
+      ms = 1000;
     delay(ms);
   } else if (strcmp_P(cmd, PSTR("waitwifi")) == 0) {
     kprintln(F("System: Waiting for IP address..."));
@@ -2565,7 +3086,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       yield();
     }
     if (WiFi.status() == WL_CONNECTED) {
-      kprint(F("\n[OK] IP Obtained: ")); kprintln(WiFi.localIP());
+      kprint(F("\n[OK] IP Obtained: "));
+      kprintln(WiFi.localIP());
     } else {
       kprintln(F("\n[ERROR] WiFi Connection Failed."));
     }
@@ -2580,11 +3102,12 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     return;
   }
   shellDepth++;
-  static char scriptLine[MAX_INPUT_LEN]; 
+  static char scriptLine[MAX_INPUT_LEN];
   int ci = 0, li = 0, lineNum = 0;
   bool truncated = false;
   int len = strlen(content);
-  kprint(F("[sh] Content: ")); kprintln(content);
+  kprint(F("[sh] Content: "));
+  kprintln(content);
 
   while (ci <= len) {
     char c = (ci < len) ? content[ci] : '\0';
@@ -2592,15 +3115,17 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     if (c == ';' || c == '\n' || c == '\r') {
       if (li > 0) {
         scriptLine[li] = '\0';
-        char* cleanedLine = kTrim(scriptLine);
+        char *cleanedLine = kTrim(scriptLine);
         if (strlen(cleanedLine) > 0) {
           lineNum++;
-          kprint(F("[sh:")); kprint(lineNum); kprint(F("] "));
+          kprint(F("[sh:"));
+          kprint(lineNum);
+          kprint(F("] "));
           kprintln(cleanedLine);
           parseAndExecute(cleanedLine, true);
         }
         li = 0;
-        delay(100); 
+        delay(100);
         yield();
       }
     } else {
