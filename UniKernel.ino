@@ -1435,9 +1435,10 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
   bool isLogin = (strcmp_P(cmd, PSTR("login")) == 0);
   bool isHelp = (strcmp_P(cmd, PSTR("help")) == 0);
+  bool isPasswd = (strcmp_P(cmd, PSTR("passwd")) == 0);
 
   if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 &&
-      !isTelnetSafeCommand(cmd)) {
+      !isTelnetSafeCommand(cmd) && !(needsSetup && isPasswd && fromSerial)) {
     if (!fromSerial || !serialAuthenticated) {
       kprintln(F("--- ACCESS DENIED ---"));
       kprintln(F("System is protected. Please type: login [your_password]"));
