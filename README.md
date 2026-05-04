@@ -70,6 +70,7 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `cpu` | `cpu [80/160]` | Adjust the CPU clock frequency (MHz) at runtime. |
 | `sleep` | `sleep [seconds]` | Enter Light Sleep mode for a specified duration. |
 | `reboot` | `reboot` | Perform a system hardware restart. |
+| `boot` | `boot [file/list/reset]` | Manage startup boot scripts and profiles. |
 | `neofetch` | `neofetch` | Display system information banner. |
 | `clear` | `clear` | Clear the terminal screen. |
 | `dmesg` | `dmesg` | Display kernel log messages. |

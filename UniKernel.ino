@@ -2257,13 +2257,14 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     kprintln(pwmVal);
   } else if (strcmp_P(cmd, PSTR("help")) == 0) {
     kprintln(F("Files: ls, cd, pwd, mkdir, touch, cat, echo, append, cp, mv, "
-               "rm, info, save, load, lfs"));
-    kprintln(F("Hardw: on, off, gpio, pinmode, write, read, pwm, i2c, sh"));
+               "rm, info, save, load, lfs, chown, chmod"));
+    kprintln(F("Hardw: on, off, gpio, pinmode, write, read, pwm, i2c"));
     kprintln(F("Net  : wifi, bt, ifconfig, ping, wget, ntp, telnet, web, ssh, "
-               "ota, netstat"));
-    kprintln(
-        F("Sys  : login, logout, ps, top, date, uptime, uname, hwinfo, "
-          "neofetch, firewall, cpu, sleep, dmesg, free, clear, reboot, boot"));
+               "netstat"));
+    kprintln(F("Sys  : ps, top, date, uptime, uname, hwinfo, neofetch, cpu, "
+               "sleep, dmesg, free, clear, reboot, boot, df, whoami"));
+    kprintln(F("Secur: login, logout, passwd, firewall, ota, color, export, "
+               "env, sh, cron, delay, kill, bg"));
   } else if (strcmp_P(cmd, PSTR("top")) == 0) {
     for (int i = 0; i < 5; i++) {
       kprint(F("\x1b[2J\x1b[H"));
