@@ -4,7 +4,31 @@
 #include <avr/pgmspace.h>
 #include <string.h>
 
+#include <ArduinoJson.h>
+#define XOR_KEY 0x5A
+template <size_t N>
+struct Obfuscator {
+    char data[N];
+    constexpr Obfuscator(const char* str, char key) : data{} {
+        for (size_t i = 0; i < N; ++i) {
+            data[i] = str[i] ^ key;
+        }
+    }
+};
+
+#define _OSTR(str) \
+    ([]() -> String { \
+        constexpr Obfuscator<sizeof(str)> obf(str, XOR_KEY); \
+        String dec; \
+        dec.reserve(sizeof(str)); \
+        for (size_t i = 0; i < sizeof(str) - 1; ++i) { \
+            dec += (char)(obf.data[i] ^ XOR_KEY); \
+        } \
+        return dec; \
+    }())
+
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+#include <bearssl/bearssl_hash.h>
 #include <ArduinoOTA.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
@@ -322,37 +346,20 @@ ICACHE_FLASH_ATTR bool checkWiFi() {
 }
 
 ICACHE_FLASH_ATTR void hashPass(const char *input, char *output) {
-  uint32_t hash = 0;
-  int i;
-  char salt[PASS_SALT_LEN + 1];
-
-  EEPROM.get(EEPROM_SALT_ADDR, salt);
-  salt[PASS_SALT_LEN] = '\0';
-
-  for (i = 0; i < PASS_SALT_LEN && salt[i] != '\0'; i++) {
-    hash += salt[i];
-    hash += (hash << 10);
-    hash ^= (hash >> 6);
-  }
-
-  for (i = 0; input[i] != '\0' && i < 32; i++) {
-    hash += input[i];
-    hash += (hash << 10);
-    hash ^= (hash >> 6);
-  }
-
-  for (i = 0; i < 8; i++) {
-    hash += (hash << 3);
-    hash ^= (hash >> 11);
-    hash += (hash << 15);
-  }
-
-  memset(output, 0, 10);
-  for (i = 0; i < 9; i++) {
-
-    output[i] = ((hash >> (i * 3)) & 0xFF) ^ KERNEL_KEY;
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+  br_sha256_context ctx;
+  br_sha256_init(&ctx);
+  br_sha256_update(&ctx, input, strlen(input));
+  uint8_t hash[32];
+  br_sha256_out(&ctx, hash);
+  for (int i = 0; i < 9; i++) {
+    output[i] = hash[i];
   }
   output[9] = '\0';
+#else
+  strncpy(output, input, 9);
+  output[9] = '\0';
+#endif
 }
 
 ICACHE_FLASH_ATTR bool secureEquals(const char *a, const char *b, size_t len) {
@@ -822,124 +829,68 @@ ICACHE_FLASH_ATTR void setup() {
 
 ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.collectHeaders("Host");
-  webServer.on("/", []() {
-    String html =
-        F("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta "
+  webServer.on("/", HTTP_GET, []() {
+    String html = _OSTR("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta "
           "name='viewport' content='width=device-width,initial-scale=1.0'>"
           "<title>UniKernel | Dashboard</title>"
-          "<link "
-          "href='https://fonts.googleapis.com/"
-          "css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display="
-          "swap' rel='stylesheet'>"
+          "<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display=swap' rel='stylesheet'>"
           "<style>"
-          ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: "
-          "#00f2ff; --accent: #7000ff; }"
-          "body { background: var(--bg); color: #fff; font-family: 'Outfit', "
-          "sans-serif; margin: 0; overflow-x: hidden; }"
-          ".glass { background: var(--card); backdrop-filter: blur(10px); "
-          "border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
+          ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: #00f2ff; --accent: #7000ff; }"
+          "body { background: var(--bg); color: #fff; font-family: 'Outfit', sans-serif; margin: 0; overflow-x: hidden; }"
+          ".glass { background: var(--card); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
           ".container { max-width: 1000px; margin: 50px auto; padding: 20px; }"
-          "header { display: flex; justify-content: space-between; "
-          "align-items: center; margin-bottom: 40px; }"
-          "h1 { font-weight: 700; font-size: 2.5rem; background: "
-          "linear-gradient(45deg, var(--primary), var(--accent)); "
-          "-webkit-background-clip: text; -webkit-text-fill-color: "
-          "transparent; margin: 0; }"
-          ".grid { display: grid; grid-template-columns: repeat(auto-fit, "
-          "minmax(300px, 1fr)); gap: 20px; }"
+          "header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }"
+          "h1 { font-weight: 700; font-size: 2.5rem; background: linear-gradient(45deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; }"
+          ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }"
           ".stats-card { padding: 30px; position: relative; overflow: hidden; }"
-          ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: "
-          "var(--primary); margin: 10px 0; }"
-          ".btn { padding: 12px 25px; border-radius: 12px; border: none; "
-          "background: linear-gradient(45deg, var(--primary), var(--accent)); "
-          "color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
-          ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px "
-          "rgba(0,242,255,0.4); }"
-          ".status-dot { width: 10px; height: 10px; background: #00ff88; "
-          "border-radius: 50%; display: inline-block; margin-right: 10px; "
-          "box-shadow: 0 0 10px #00ff88; }"
+          ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: var(--primary); margin: 10px 0; }"
+          ".btn { padding: 12px 25px; border-radius: 12px; border: none; background: linear-gradient(45deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
+          ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0,242,255,0.4); }"
+          ".status-dot { width: 10px; height: 10px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; }"
           "</style></head><body>"
-          "<div class='container'><header><h1>UniKernel Core</h1><div><span "
-          "class='status-dot'></span>SYSTEM ONLINE</div></header>"
-          "<div class='grid'><div class='stats-card glass'><h3>Memory "
-          "Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap "
-          "Bytes</p></div>"
-          "<div class='stats-card glass'><h3>System Uptime</h3><div "
-          "class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
-          "<div class='glass' style='margin-top:20px; "
-          "padding:30px;'><h3>Hardware Control</h3>"
-          "<div style='margin-bottom:15px; display:flex; gap:10px;'><input "
-          "type='password' id='p' placeholder='Auth Password' "
-          "style='padding:10px; border-radius:8px; border:1px solid #444; "
-          "background:#111; color:#fff'>"
-          "<button class='btn' onclick='alert(\"Password Saved Locally\")' "
-          "style='background:#444'>SAVE</button></div>"
-          "<div style='display:flex; gap:10px;'>"
-          "<button class='btn' onclick='toggle(2,0)'>LED ON</button><button "
-          "class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED "
-          "OFF</button></div>"
-          "<h3 style='margin-top:20px'>Bluetooth Link</h3><div "
-          "style='display:flex; gap:10px;'>"
-          "<button class='btn' onclick='bt(1)' style='background:#0066ff'>BT "
-          "ENABLE</button><button class='btn' onclick='bt(0)' "
-          "style='background:#444'>BT DISABLE</button></div></div>"
-          "</div><script>"
-          "function "
-          "update(){fetch('/api/"
-          "stats').then(r=>r.json()).then(d=>{document.getElementById('mem')."
-          "innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-          "function toggle(p,v){const "
-          "pw=encodeURIComponent(document.getElementById('p').value); "
-          "fetch(`/api/gpio?pin=${p}&val=${v}&pass=${pw}`);}"
-          "function bt(v){const "
-          "pw=encodeURIComponent(document.getElementById('p').value); "
-          "fetch(`/api/bt?val=${v}&pass=${pw}`);} setInterval(update, 1000); "
-          "update();"
+          "<div class='container'><header><h1>UniKernel Core</h1><div><span class='status-dot'></span>SYSTEM ONLINE</div></header>"
+          "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
+          "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
+          "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3>"
+          "<div style='margin-bottom:15px; display:flex; gap:10px;'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'>"
+          "<button class='btn' onclick='alert(\"Password Ready\")' style='background:#444'>SAVE</button></div>"
+          "<div style='display:flex; gap:10px;'><button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
+          "</div></div><script>"
+          "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
+          "async function toggle(p,v){"
+          "  const pw=document.getElementById('p').value;"
+          "  await fetch('/api/gpio', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pin: p, val: v, pass: pw}) });"
+          "}"
+          "setInterval(update, 1000); update();"
           "</script></body></html>");
     webServer.send(200, "text/html", html);
   });
 
-  webServer.on("/api/gpio", []() {
-    char otaPass[16];
-    EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-    if (otaPass[0] == 0xFF || otaPass[0] == 0x00)
-      strcpy(otaPass, "unikernel");
-    if (webServer.arg("pass") != String(otaPass)) {
-      webServer.send(401, "text/plain", "Unauthorized");
-      return;
+  webServer.on("/api/gpio", HTTP_POST, []() {
+    if (!webServer.hasArg("plain")) {
+        webServer.send(400, "application/json", _OSTR("{\"error\":\"Bad Request\"}"));
+        return;
     }
-
-    String host = webServer.header("Host");
-    bool hostAllowed = false;
-    if (host.length() == 0)
-      hostAllowed = true;
-    else if (host.startsWith("192.168."))
-      hostAllowed = true;
-    else if (host.startsWith("10."))
-      hostAllowed = true;
-    else if (host.startsWith("172."))
-      hostAllowed = true;
-    else if (host.startsWith("169.254."))
-      hostAllowed = true;
-    else if (host.startsWith("localhost"))
-      hostAllowed = true;
-    else if (host.startsWith("unikernel"))
-      hostAllowed = true;
-    else if (host.equals(WiFi.localIP().toString()))
-      hostAllowed = true;
-
-    if (!hostAllowed) {
-      webServer.send(403, "text/plain", "CSRF Protection Triggered");
-      return;
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
+    if (error) {
+        webServer.send(400, "application/json", _OSTR("{\"error\":\"Invalid JSON\"}"));
+        return;
     }
-    int pin = webServer.arg("pin").toInt();
-    int val = webServer.arg("val").toInt();
-    if (pin >= 0 && pin <= 16) {
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, val);
-      webServer.send(200, "text/plain", "OK");
-    } else
-      webServer.send(400, "text/plain", "Invalid Pin");
+    String pass = doc["pass"] | "";
+    char hashedInput[10];
+    char savedPass[10];
+    EEPROM.get(EEPROM_PASS_ADDR, savedPass);
+    hashPass(pass.c_str(), hashedInput);
+    if (!secureEquals(hashedInput, savedPass, 9)) {
+        webServer.send(401, "application/json", _OSTR("{\"error\":\"Unauthorized\"}"));
+        return;
+    }
+    int pin = doc["pin"] | 2;
+    int val = doc["val"] | 1;
+    fastPinMode(pin, OUTPUT);
+    fastDigitalWrite(pin, val);
+    webServer.send(200, "application/json", _OSTR("{\"status\":\"success\"}"));
   });
 
   webServer.on("/api/stats", []() {
@@ -2578,18 +2529,18 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       loginFailCount = 0;
       EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)0);
       EEPROM.commit();
-      kprintln(F("Login Successful."));
-      addDmesg(F("User logged in"));
+      kprintln(_OSTR("Login Successful."));
+      addDmesgRam(_OSTR("User logged in").c_str());
     } else {
       loginFailCount++;
       EEPROM.put(EEPROM_FAIL_COUNT_ADDR, loginFailCount);
       EEPROM.commit();
       if (loginFailCount >= MAX_FAIL_COUNT) {
         isLockedOut = true;
-        kprintln(F("CRITICAL: System Locked due to Brute-Force."));
-        addDmesg(F("System hard locked!"));
+        kprintln(_OSTR("CRITICAL: System Locked due to Brute-Force."));
+        addDmesgRam(_OSTR("System hard locked!").c_str());
       } else {
-        addDmesg(F("Login failed!"));
+        addDmesgRam(_OSTR("Login failed!").c_str());
         lastLoginAttempt = millis();
         loginCooldown = 1000UL << loginFailCount;
         if (loginCooldown > 30000)
