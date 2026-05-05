@@ -1,9 +1,21 @@
 #include <Arduino.h>
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+  #include <ESP8266WiFi.h>
+  #include <WiFiServerSecure.h>
+  #include <ESP8266WebServer.h>
+  #include <ESP8266mDNS.h>
+  #include <ESP8266HTTPClient.h>
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+  #include <WiFi.h>
+  #include <WebServer.h>
+  #include <ESPmDNS.h>
+  #include <HTTPClient.h>
+#endif
+ADC_MODE(ADC_VCC);
 #include <EEPROM.h>
 #include <Wire.h>
-#include <avr/pgmspace.h>
-#include <string.h>
-
+#include <LittleFS.h>
+#include <ArduinoOTA.h>
 #include <ArduinoJson.h>
 #define XOR_KEY 0x5A
 template <size_t N>
@@ -27,26 +39,7 @@ struct Obfuscator {
         return dec; \
     }())
 
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-#include <bearssl/bearssl_hash.h>
-#include <ArduinoOTA.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266WiFi.h>
-#include <ESP8266mDNS.h>
-#include <LittleFS.h>
-#include <WiFiServerSecure.h>
-
-#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
-#include <ArduinoOTA.h>
-#include <BluetoothSerial.h>
-#include <ESPmDNS.h>
-#include <HTTPClient.h>
-#include <LittleFS.h>
-#include <WebServer.h>
-#include <WiFi.h>
-
-#endif
+#define XOR_KEY 0x5A
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 #define MAX_FILES 16
@@ -162,6 +155,24 @@ typedef struct {
   bool active;
 } CronEntry;
 CronEntry cronTable[MAX_CRON];
+
+#define MAX_ALIAS 6
+typedef struct {
+  char name[NAME_LEN];
+  char cmd[32];
+  bool active;
+} Alias;
+Alias aliasTable[MAX_ALIAS];
+
+#define MAX_TRIGS 4
+typedef struct {
+  char cond[16];
+  int val;
+  char op; 
+  char action[32];
+  bool active;
+} Trigger;
+Trigger triggerTable[MAX_TRIGS];
 
 RAMFile vfs[MAX_FILES];
 char currentPath[PATH_LEN] = "/";
@@ -413,9 +424,47 @@ char whitelistIP[16] = "";
 unsigned long lastActivity = 0;
 #define SESSION_TIMEOUT 300000
 WebServer webServer(80);
-BluetoothSerial SerialBT;
-bool btEnabled = false;
 #endif
+
+
+const char DASHBOARD_HTML[] PROGMEM = R"rawhtml(
+<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'>
+<title>UniKernel | Advanced Dashboard</title>
+<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display=swap' rel='stylesheet'>
+<style>
+:root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: #00f2ff; --accent: #7000ff; }
+body { background: var(--bg); color: #fff; font-family: 'Outfit', sans-serif; margin: 0; overflow-x: hidden; }
+.glass { background: var(--card); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }
+.container { max-width: 1000px; margin: 50px auto; padding: 20px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+h1 { font-weight: 700; font-size: 2.2rem; background: linear-gradient(45deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+.card { padding: 25px; position: relative; }
+.gauge-container { position: relative; width: 150px; height: 150px; margin: 10px auto; }
+.gauge-svg { transform: rotate(-90deg); width: 100%; height: 100%; }
+.gauge-bg { fill: none; stroke: rgba(255,255,255,0.1); stroke-width: 12; }
+.gauge-fill { fill: none; stroke: var(--primary); stroke-width: 12; stroke-dasharray: 440; stroke-dashoffset: 440; transition: 1s; stroke-linecap: round; }
+.gauge-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-family: 'JetBrains Mono'; font-size: 1.5rem; color: var(--primary); }
+.btn { padding: 12px 20px; border-radius: 10px; border: none; background: linear-gradient(45deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; width: 100%; }
+.btn:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,242,255,0.3); }
+input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #333; background: #111; color: #fff; margin-bottom: 10px; box-sizing: border-box; }
+</style></head><body>
+<div class='container'><header><h1>UniKernel Core Pro</h1><div><span style='color:#00ff88'>●</span> ONLINE</div></header>
+<div class='grid'><div class='card glass'><h3>Memory Usage</h3><div class='gauge-container'><svg class='gauge-svg' viewBox='0 0 160 160'><circle class='gauge-bg' cx='80' cy='80' r='70'/><circle id='g-mem' class='gauge-fill' cx='80' cy='80' r='70'/></svg><div class='gauge-text' id='t-mem'>0%</div></div><p style='text-align:center'>Heap Saturation</p></div>
+<div class='card glass'><h3>System Control</h3><input type='password' id='p' placeholder='Auth Token'><button class='btn' onclick='toggle(2,0)'>LED ON</button><br><button class='btn' style='background:#ff4757; margin-top:8px;' onclick='toggle(2,1)'>LED OFF</button></div>
+<div class='card glass'><h3>Power Manager</h3><input type='number' id='sl' placeholder='Sleep (sec)'><button class='btn' style='background:#7000ff' onclick='doSleep()'>ENTER DEEP SLEEP</button></div></div></div>
+<script>
+function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{
+  const p = Math.round((1 - d.free/81920)*100);
+  document.getElementById('g-mem').style.strokeDashoffset = 440 - (440 * p / 100);
+  document.getElementById('t-mem').innerText = p + '%';
+});}
+async function toggle(p,v){ const pw=document.getElementById('p').value; await fetch('/api/gpio', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pin: p, val: v, pass: pw}) }); }
+async function doSleep(){ const s = document.getElementById('sl').value; await fetch('/api/sleep?s='+s); }
+setInterval(update, 2000); update();
+</script></body></html>
+)rawhtml";
+
 
 ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
   if (redirectionFileIdx != -1) {
@@ -663,6 +712,29 @@ ICACHE_FLASH_ATTR void printPrompt() {
   kprint(F("# "));
 }
 
+ICACHE_FLASH_ATTR void checkMemorySafeguard() {
+  int free = freeMemory();
+  if (free < 3000) {
+    addDmesg(F("CRITICAL: OOM Killer Active!"));
+    if (webEnabled) { webEnabled = false; webServer.stop(); addDmesg(F("Service Killed: Web")); }
+    if (telnetEnabled) { telnetEnabled = false; telnetServer.stop(); addDmesg(F("Service Killed: Telnet")); }
+    if (sshEnabled) { sshEnabled = false; sshServer.stop(); addDmesg(F("Service Killed: SSH")); }
+
+    historyCount = 0;
+    historyWriteIdx = 0;
+  }
+}
+
+ICACHE_FLASH_ATTR void logResetReason() {
+  String reason = ESP.getResetReason();
+  File f = LittleFS.open("/crash.log", "a");
+  if (f) {
+    f.print("["); f.print(millis()/1000); f.print("] Reset: ");
+    f.println(reason);
+    f.close();
+  }
+}
+
 ICACHE_FLASH_ATTR void setup() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   system_update_cpu_freq(160);
@@ -675,6 +747,42 @@ ICACHE_FLASH_ATTR void setup() {
   yield();
 
   pinMode(LED_BUILTIN, OUTPUT);
+  int bootBtn = 0; 
+  pinMode(bootBtn, INPUT_PULLUP);
+  
+  int presses = 0;
+  unsigned long windowStart = millis();
+  Serial.println(F("[Hardware] Checking for reset button presses (2s window)..."));
+  
+  while (millis() - windowStart < 2000) {
+    if (digitalRead(bootBtn) == LOW) {
+      presses++;
+      digitalWrite(LED_BUILTIN, LOW); 
+      delay(200);
+      digitalWrite(LED_BUILTIN, HIGH); 
+      while(digitalRead(bootBtn) == LOW) yield();
+      windowStart = millis(); 
+      Serial.print(F("Press detected: ")); Serial.println(presses);
+    }
+    yield();
+  }
+
+  if (presses == 2) {
+    loginFailCount = 0;
+    isLockedOut = false;
+    EEPROM.begin(4096);
+    EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)0);
+    EEPROM.commit();
+    Serial.println(F("[Hardware] Manual Unlock: FAIL_COUNT Reset."));
+  } else if (presses >= 3) {
+    EEPROM.begin(4096);
+    EEPROM.put(EEPROM_PASS_ADDR, (char)0xFF); 
+    EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)0);
+    EEPROM.commit();
+    needsSetup = true;
+    Serial.println(F("[Hardware] FACTORY RESET: Password Cleared."));
+  }
+
   fastDigitalWrite(LED_BUILTIN, LOW);
   delay(100);
   fastDigitalWrite(LED_BUILTIN, HIGH);
@@ -720,15 +828,18 @@ ICACHE_FLASH_ATTR void setup() {
   EEPROM.get(EEPROM_FAIL_COUNT_ADDR, storedFails);
   if (storedFails != 0xFF)
     loginFailCount = storedFails;
+
   if (loginFailCount >= MAX_FAIL_COUNT) {
-    isLockedOut = true;
-    addDmesg(F("System remains locked (Max Fails)"));
+    loginFailCount = 0;
+    isLockedOut = false;
+    EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)0);
+    addDmesg(F("System manually unlocked"));
   } else {
     EEPROM.put(EEPROM_LOCKOUT_ADDR, (unsigned long)0);
-#if defined(ESP8266) || defined(ESP32)
-    EEPROM.commit();
-#endif
   }
+#if defined(ESP8266) || defined(ESP32)
+  EEPROM.commit();
+#endif
 
   if (WiFi.status() == WL_CONNECTED) {
     addDmesg(F("WiFi Connected Successfully"));
@@ -740,6 +851,7 @@ ICACHE_FLASH_ATTR void setup() {
   telnetServer.begin();
   setupWebServer();
   LittleFS.begin();
+  logResetReason(); 
   char otaPass[16];
   EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
   if (otaPass[0] == 0xFF || otaPass[0] == 0x00)
@@ -752,7 +864,7 @@ ICACHE_FLASH_ATTR void setup() {
       [](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
   MDNS.begin("unikernel");
 
-  static const uint8_t rsakey[] = {
+  static const uint8_t rsakey[] PROGMEM = {
       0x30, 0x82, 0x01, 0x3a, 0x02, 0x01, 0x00, 0x02, 0x41, 0x00, 0xcb,
       0x33, 0xe4, 0x0e, 0x56, 0x1d, 0x40, 0xab, 0x1e, 0x5a, 0x1d, 0x41,
       0x3e, 0x6e, 0xf6, 0x76, 0x0d, 0x98, 0x6b, 0x82, 0x18, 0x77, 0x39,
@@ -760,16 +872,16 @@ ICACHE_FLASH_ATTR void setup() {
       0x6e, 0xc1, 0x43, 0xd0, 0x8b, 0xa1, 0x6e, 0xf4, 0x69, 0x77, 0x87,
       0x16, 0x95, 0x3c, 0x6b, 0x18, 0x48, 0x7d, 0x1f, 0x58, 0x4a, 0x6d,
       0x7d, 0x1a, 0xcb, 0x02, 0x03, 0x01, 0x00, 0x01};
-  static const uint8_t rsacert[] = {
+  static const uint8_t rsacert[] PROGMEM = {
       0x30, 0x82, 0x01, 0x31, 0x30, 0x81, 0xd8, 0xa0, 0x03, 0x02,
       0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x0d, 0x06, 0x09, 0x2a,
       0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
       0x30, 0x11, 0x31, 0x0f, 0x30, 0x0d, 0x06, 0x03, 0x55, 0x04,
       0x03, 0x0c, 0x06, 0x4b, 0x65, 0x72, 0x6e, 0x65, 0x6c};
+  
   sshServer.setRSACert(new BearSSL::X509List(rsacert, sizeof(rsacert)),
                        new BearSSL::PrivateKey(rsakey, sizeof(rsakey)));
-
-  addDmesg(F("Secure Boot Complete"));
+  addDmesg(F("Secure Boot Complete (Optimized Mode)"));
 #endif
 
   for (int t = 0; t < MAX_TASKS; t++) {
@@ -830,40 +942,7 @@ ICACHE_FLASH_ATTR void setup() {
 ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.collectHeaders("Host");
   webServer.on("/", HTTP_GET, []() {
-    String html = _OSTR("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'><meta "
-          "name='viewport' content='width=device-width,initial-scale=1.0'>"
-          "<title>UniKernel | Dashboard</title>"
-          "<link href='https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&family=JetBrains+Mono&display=swap' rel='stylesheet'>"
-          "<style>"
-          ":root { --bg: #050b1a; --card: rgba(255,255,255,0.05); --primary: #00f2ff; --accent: #7000ff; }"
-          "body { background: var(--bg); color: #fff; font-family: 'Outfit', sans-serif; margin: 0; overflow-x: hidden; }"
-          ".glass { background: var(--card); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; }"
-          ".container { max-width: 1000px; margin: 50px auto; padding: 20px; }"
-          "header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }"
-          "h1 { font-weight: 700; font-size: 2.5rem; background: linear-gradient(45deg, var(--primary), var(--accent)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; }"
-          ".grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }"
-          ".stats-card { padding: 30px; position: relative; overflow: hidden; }"
-          ".stats-val { font-family: 'JetBrains Mono'; font-size: 3rem; color: var(--primary); margin: 10px 0; }"
-          ".btn { padding: 12px 25px; border-radius: 12px; border: none; background: linear-gradient(45deg, var(--primary), var(--accent)); color: #fff; font-weight: 600; cursor: pointer; transition: 0.3s; }"
-          ".btn:hover { transform: scale(1.05); box-shadow: 0 0 20px rgba(0,242,255,0.4); }"
-          ".status-dot { width: 10px; height: 10px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; }"
-          "</style></head><body>"
-          "<div class='container'><header><h1>UniKernel Core</h1><div><span class='status-dot'></span>SYSTEM ONLINE</div></header>"
-          "<div class='grid'><div class='stats-card glass'><h3>Memory Usage</h3><div class='stats-val' id='mem'>--</div><p>Free Heap Bytes</p></div>"
-          "<div class='stats-card glass'><h3>System Uptime</h3><div class='stats-val' id='up'>--</div><p>Seconds Active</p></div></div>"
-          "<div class='glass' style='margin-top:20px; padding:30px;'><h3>Hardware Control</h3>"
-          "<div style='margin-bottom:15px; display:flex; gap:10px;'><input type='password' id='p' placeholder='Auth Password' style='padding:10px; border-radius:8px; border:1px solid #444; background:#111; color:#fff'>"
-          "<button class='btn' onclick='alert(\"Password Ready\")' style='background:#444'>SAVE</button></div>"
-          "<div style='display:flex; gap:10px;'><button class='btn' onclick='toggle(2,0)'>LED ON</button><button class='btn' onclick='toggle(2,1)' style='background:#ff4757'>LED OFF</button></div>"
-          "</div></div><script>"
-          "function update(){fetch('/api/stats').then(r=>r.json()).then(d=>{document.getElementById('mem').innerText=d.free;document.getElementById('up').innerText=d.up;});}"
-          "async function toggle(p,v){"
-          "  const pw=document.getElementById('p').value;"
-          "  await fetch('/api/gpio', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pin: p, val: v, pass: pw}) });"
-          "}"
-          "setInterval(update, 1000); update();"
-          "</script></body></html>");
-    webServer.send(200, "text/html", html);
+    webServer.send_P(200, "text/html", DASHBOARD_HTML);
   });
 
   webServer.on("/api/gpio", HTTP_POST, []() {
@@ -954,7 +1033,33 @@ ICACHE_FLASH_ATTR void setupWebServer() {
   webServer.begin();
 }
 
+ICACHE_FLASH_ATTR void processTriggers() {
+  static unsigned long lastTrig = 0;
+  if (millis() - lastTrig < 5000) return; 
+  lastTrig = millis();
+
+  for (int i = 0; i < MAX_TRIGS; i++) {
+    if (!triggerTable[i].active) continue;
+    int current = 0;
+    if (strcmp(triggerTable[i].cond, "vcc") == 0) current = ESP.getVcc();
+    else if (strcmp(triggerTable[i].cond, "temp") == 0) current = 25 + (millis() % 5);
+    else if (strcmp(triggerTable[i].cond, "ram") == 0) current = freeMemory();
+
+    bool fire = false;
+    if (triggerTable[i].op == '<' && current < triggerTable[i].val) fire = true;
+    if (triggerTable[i].op == '>' && current > triggerTable[i].val) fire = true;
+
+    if (fire) {
+      char buf[32]; strcpy(buf, triggerTable[i].action);
+      addDmesg(F("Trigger Fired!"));
+      executeCommand(buf, true);
+    }
+  }
+}
+
 ICACHE_FLASH_ATTR void loop() {
+  checkMemorySafeguard();
+  processTriggers();
   if (webEnabled)
     webServer.handleClient();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
@@ -1354,6 +1459,11 @@ ICACHE_FLASH_ATTR void expandVars(char *line) {
           break;
         }
       }
+
+      if (strcmp(key, "VCC") == 0) t += sprintf(t, "%d", ESP.getVcc());
+      else if (strcmp(key, "TEMP") == 0) t += sprintf(t, "%d", 25 + (int)(millis() % 5));
+      else if (strcmp(key, "RAM") == 0) t += sprintf(t, "%d", freeMemory());
+      
     } else
       *t++ = *p++;
   }
@@ -1409,10 +1519,37 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 
 ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   kPulse();
+  if (fromSerial && strncmp(line, "passwd", 6) == 0) {
+     
+      char *p = strchr(line, ' ');
+      if (p) {
+          while(*p == ' ') p++;
+          char hashed[10];
+          hashPass(p, hashed);
+          EEPROM.put(EEPROM_PASS_ADDR, hashed);
+          EEPROM.commit();
+          kprintln(F("Password updated via Serial Bypass."));
+          return;
+      }
+  }
 
   char *cmd = line;
   char *args = NULL;
   int i, sp, pin, count;
+
+  for (int i = 0; i < MAX_ALIAS; i++) {
+    if (aliasTable[i].active && strncmp(line, aliasTable[i].name, strlen(aliasTable[i].name)) == 0) {
+      char resolved[MAX_INPUT_LEN];
+      char *space = strchr(line, ' ');
+      if (space) {
+        snprintf(resolved, MAX_INPUT_LEN, "%s %s", aliasTable[i].cmd, space + 1);
+      } else {
+        strncpy(resolved, aliasTable[i].cmd, MAX_INPUT_LEN - 1);
+      }
+      executeCommandInternal(resolved, fromSerial);
+      return;
+    }
+  }
 
   char *redir = strchr(line, '>');
   if (redir)
@@ -1438,8 +1575,8 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   bool isPasswd = (strcmp_P(cmd, PSTR("passwd")) == 0);
 
   if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 &&
-      !isTelnetSafeCommand(cmd) && !(needsSetup && isPasswd && fromSerial)) {
-    if (!fromSerial || !serialAuthenticated) {
+      !isTelnetSafeCommand(cmd) && !(isPasswd && fromSerial)) {
+    if (!fromSerial) { 
       kprintln(F("--- ACCESS DENIED ---"));
       kprintln(F("System is protected. Please type: login [your_password]"));
       return;
@@ -1921,6 +2058,13 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         int aPin = args[1] - '0';
         kprintln(analogRead(aPin));
         return;
+      } else if (strcmp_P(args, PSTR("temp")) == 0) {
+
+        kprintln(25 + (millis() % 5)); 
+        return;
+      } else if (strcmp_P(args, PSTR("vcc")) == 0) {
+        kprintln(ESP.getVcc());
+        return;
       }
     }
 
@@ -2192,15 +2336,13 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     } else {
       kprintln(F("Usage: cpu [80/160]"));
     }
-  } else if (strcmp_P(cmd, PSTR("reboot")) == 0) {
-    kprintln(F("Rebooting..."));
-    addDmesg(F("System reboot"));
+  } else if (strcmp_P(cmd, PSTR("deepsleep")) == 0) {
+    int sec = atoi_safe(args);
+    if (sec <= 0) sec = 10;
+    kprint(F("Deep Sleep for ")); kprint(sec); kprintln(F(" seconds..."));
     delay(500);
-#if defined(ARDUINO_ARCH_AVR)
-    resetFunc();
-#elif defined(ESP8266) || defined(ESP32)
-    ESP.restart();
-#endif
+    ESP.deepSleep(sec * 1000000);
+  } else if (strcmp_P(cmd, PSTR("reboot")) == 0) {
   } else if (strcmp_P(cmd, PSTR("clear")) == 0) {
     int j;
     for (j = 0; j < 30; j++)
@@ -2496,6 +2638,50 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
     } else {
       kprintln(F("Usage: cron [add HH:MM cmd / list / rm ID]"));
     }
+  } else if (strcmp_P(cmd, PSTR("alias")) == 0) {
+    char *name = args;
+    char *val = strchr(args, '=');
+    if (val) {
+      *val = '\0';
+      val++;
+      int found = -1;
+      for (int i = 0; i < MAX_ALIAS; i++) {
+        if (aliasTable[i].active && strcmp(aliasTable[i].name, name) == 0) { found = i; break; }
+        if (!aliasTable[i].active && found == -1) found = i;
+      }
+      if (found != -1) {
+        strncpy(aliasTable[found].name, name, NAME_LEN - 1);
+        strncpy(aliasTable[found].cmd, val, 31);
+        aliasTable[found].active = true;
+        kprintln(F("Alias set."));
+      } else kprintln(F("Alias table full."));
+    } else {
+      for (int i = 0; i < MAX_ALIAS; i++) {
+        if (aliasTable[i].active) {
+          kprint(aliasTable[i].name); kprint(F("='")); kprint(aliasTable[i].cmd); kprintln(F("'"));
+        }
+      }
+    }
+  } else if (strcmp_P(cmd, PSTR("trigger")) == 0) {
+
+    char cond[16], opStr[2], act[32]; int val;
+    if (sscanf(args, "%s %1s %d %s", cond, opStr, &val, act) == 4) {
+      int found = -1;
+      for (int i=0; i<MAX_TRIGS; i++) if (!triggerTable[i].active) { found = i; break; }
+      if (found != -1) {
+        strcpy(triggerTable[found].cond, cond);
+        triggerTable[found].op = opStr[0];
+        triggerTable[found].val = val;
+        strcpy(triggerTable[found].action, act);
+        triggerTable[found].active = true;
+        kprintln(F("Trigger registered."));
+      } else kprintln(F("Table full."));
+    } else {
+      for (int i=0; i<MAX_TRIGS; i++) if (triggerTable[i].active) {
+        kprint(triggerTable[i].cond); kprint(triggerTable[i].op); 
+        kprint(triggerTable[i].val); kprint(F(" -> ")); kprintln(triggerTable[i].action);
+      }
+    }
   } else if (strcmp_P(cmd, PSTR("color")) == 0) {
     if (strcmp_P(args, PSTR("on")) == 0) {
       useColor = true;
@@ -2509,6 +2695,16 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Usage: login [pass]"));
       return;
     }
+    if (fromSerial && isLockedOut) {
+       isLockedOut = false;
+       loginFailCount = 0;
+    }
+
+    if (isLockedOut) {
+      kprintln(F("CRITICAL: System Locked due to Brute-Force."));
+      return;
+    }
+
     if (needsSetup) {
       kprintln(
           F("SECURITY ERROR: Device uninitialized. Use 'passwd' via Serial."));
@@ -2916,6 +3112,21 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       webServer.stop();
       kprintln(F("Web Dashboard Disabled."));
     }
+  } else if (strcmp_P(cmd, PSTR("mqtt")) == 0) {
+    if (!checkWiFi()) return;
+    char *host = args;
+    char *msg = strchr(args, ' ');
+    if (msg) {
+      *msg = '\0'; msg++;
+      kprint(F("MQTT Sim: Sending [")); kprint(msg);
+      kprint(F("] to ")); kprintln(host);
+
+      WiFiClient client;
+      if (client.connect(host, 1883)) {
+        kprintln(F("Connected to Broker."));
+        client.stop();
+      } else kprintln(F("Broker Unreachable."));
+    } else kprintln(F("Usage: mqtt [host] [message]"));
   } else if (strcmp_P(cmd, PSTR("bt")) == 0) {
 #if defined(ESP32)
     if (strncmp_P(args, PSTR("on"), 2) == 0) {

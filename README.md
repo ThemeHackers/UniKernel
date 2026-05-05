@@ -27,6 +27,17 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `save` | `save` | Persist the VFS state to EEPROM. |
 | `load` | `load` | Restore the VFS state from EEPROM. |
 | `lfs` | `lfs [ls/format/write]` | Manage the LittleFS persistent flash storage. |
+| `alias` | `alias name=cmd` | Create custom command shortcuts (e.g., `alias d=neofetch`). |
+
+### 1.2 System & Security
+| Command | Usage | Description |
+| :--- | :--- | :--- |
+| `login` | `login [password]` | Authenticate to access protected commands. |
+| `passwd` | `passwd [new_pass]` | Set/Change the system password. |
+| `trigger`| `trigger [cond] [op] [val] [act]` | Intelligent automation (e.g., `trigger vcc < 3000 deepsleep`). |
+| `deepsleep`| `deepsleep [sec]` | Enter low-power mode for X seconds. |
+| `mqtt` | `mqtt [host] [msg]` | Simulate/Send data to an external IoT Broker. |
+| `reboot` | `reboot` | Restart the system. |
 | `chown` | `chown [root/guest] [file]` | Change the owner of a file. |
 | `chmod` | `chmod [mode] [file]` | Change file permissions (Octal mode). |
 
@@ -116,4 +127,47 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 *   **File System:** Hybrid VFS (RAM-based) + LittleFS (Persistent Flash-based)
 
 ---
-*UniKernel - Professional Kernel Environment for Microcontrollers*
+
+## 4. Intelligent Automation
+
+### 4.1 Smart Variables
+You can use dynamic hardware data in any command by prefixing with `$`:
+- `$VCC`: Current battery/input voltage in mV.
+- `$TEMP`: Internal system temperature simulation.
+- `$RAM`: Remaining free heap memory in bytes.
+
+**Example:** `echo "Power Level: $VCC" > /dev/null`
+
+### 4.2 Smart Triggers
+UniKernel can monitor itself and react to environment changes:
+- `trigger vcc < 3100 deepsleep` : Sleep if battery is low.
+- `trigger ram < 2500 clear` : Free memory buffers if RAM is tight.
+
+---
+
+## 5. Hardware Interface & Recovery
+
+### 5.1 Virtual Devices (`/dev/`)
+Access hardware directly via the filesystem:
+- `cat /dev/vcc` : Read current voltage.
+- `cat /dev/temp` : Read current temperature.
+- `cat /dev/led` : Get LED status (0/1).
+
+### 5.2 Physical Reset Button (FLASH/GPIO 0)
+Use the physical button on your board to recover access:
+1. **Double Click (2x):** Manual Unlock (Resets `loginFailCount`).
+2. **Triple Click (3x):** Factory Reset (Clears Password and Fail Count).
+
+---
+
+## 6. External Connectivity (IoT)
+
+### 6.1 MQTT Bridge
+To send data to an external server or Home Assistant:
+`mqtt 192.168.1.50 "Temperature is $TEMP"`
+
+### 6.2 Remote Control (Web Dashboard)
+Access your dashboard at `http://[ESP_IP]`. The Pro Dashboard includes real-time RAM gauges and remote power management tools.
+
+---
+**UniKernel Pro** - *Smarter, Faster, More Secure.*
