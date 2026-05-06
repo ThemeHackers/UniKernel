@@ -1,4 +1,4 @@
-# UniKernel User Manual for ESP8266
+# UniKernel User Manual for ESP8266 , ESP32
 
 UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resource management. It features a Virtual File System (VFS), multitasking task management, and integrated security protocols.
 
