@@ -207,14 +207,15 @@ unsigned long lastTelnetActivity = 0;
 unsigned long lastSSHActivity = 0;
 unsigned long lastLoginAttempt = 0;
 unsigned long loginCooldown = 0;
+char whitelistIP[16] = "";
 #define MAX_SHELL_DEPTH 2
 #define SESSION_TIMEOUT 300000
 #define MAX_FAIL_COUNT 5
 #define LOCKOUT_DURATION 300000
 
 #define EEPROM_PASS_ADDR 512
-#define EEPROM_LOCKOUT_ADDR 522
-#define EEPROM_SALT_ADDR 530
+#define EEPROM_LOCKOUT_ADDR 530
+#define EEPROM_SALT_ADDR 538
 #define EEPROM_OTA_PASS_ADDR 550
 #define EEPROM_FAIL_COUNT_ADDR 566
 #define EEPROM_BOOT_FILE_ADDR 580
@@ -362,19 +363,24 @@ ICACHE_FLASH_ATTR bool checkWiFi() {
 }
 
 ICACHE_FLASH_ATTR void hashPass(const char *input, char *output) {
+  char salt[PASS_SALT_LEN + 1];
+  EEPROM.get(EEPROM_SALT_ADDR, salt);
+  salt[PASS_SALT_LEN] = '\0';
+
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   br_sha256_context ctx;
   br_sha256_init(&ctx);
+  br_sha256_update(&ctx, salt, strlen(salt));
   br_sha256_update(&ctx, input, strlen(input));
   uint8_t hash[32];
   br_sha256_out(&ctx, hash);
-  for (int i = 0; i < 9; i++) {
+  for (int i = 0; i < 16; i++) {
     output[i] = hash[i];
   }
-  output[9] = '\0';
+  output[16] = '\0';
 #else
-  strncpy(output, input, 9);
-  output[9] = '\0';
+
+  #error "Strong cryptographic hash required. Alternate targets must implement SHA-256."
 #endif
 }
 
@@ -400,6 +406,39 @@ ICACHE_FLASH_ATTR bool isValidFsName(const char *name) {
   return true;
 }
 
+ICACHE_FLASH_ATTR bool isIpAllowed(IPAddress ip) {
+  if (strlen(whitelistIP) == 0) return true;
+  return ip.toString() == String(whitelistIP);
+}
+
+ICACHE_FLASH_ATTR bool checkWebAuth(String pass, IPAddress remoteIp) {
+  if (!isIpAllowed(remoteIp)) {
+    logError("Firewall block: IP not whitelisted");
+    return false;
+  }
+  if (isLockedOut) return false;
+  if (millis() - lastLoginAttempt < loginCooldown) return false;
+
+  char hashedInput[17];
+  char savedPass[17];
+  EEPROM.get(EEPROM_PASS_ADDR, savedPass);
+  hashPass(pass.c_str(), hashedInput);
+
+  if (secureEquals(hashedInput, savedPass, 16)) {
+    loginFailCount = 0;
+    return true;
+  } else {
+    loginFailCount++;
+    lastLoginAttempt = millis();
+    loginCooldown = 1000UL << loginFailCount;
+    if (loginCooldown > 30000) loginCooldown = 30000;
+    EEPROM.put(EEPROM_FAIL_COUNT_ADDR, (uint8_t)loginFailCount);
+    EEPROM.commit();
+    addDmesgRam("Web auth failed");
+    return false;
+  }
+}
+
 ICACHE_FLASH_ATTR bool isTimeout(unsigned long lastActivity,
                                  unsigned long timeout) {
   unsigned long currentTime = millis();
@@ -415,9 +454,7 @@ WiFiClientSecure sshClient;
 bool sshEnabled = false;
 int authFailures = 0;
 unsigned long lockoutEnd = 0;
-char whitelistIP[16] = "";
 unsigned long lastActivity = 0;
-#define SESSION_TIMEOUT 300000
 ESP8266WebServer webServer(80);
 #elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 WiFiServer telnetServer(23);
@@ -425,9 +462,7 @@ WiFiClient telnetClient;
 bool sshEnabled = false;
 int authFailures = 0;
 unsigned long lockoutEnd = 0;
-char whitelistIP[16] = "";
 unsigned long lastActivity = 0;
-#define SESSION_TIMEOUT 300000
 WebServer webServer(80);
 #endif
 
@@ -848,9 +883,27 @@ ICACHE_FLASH_ATTR void setup() {
   Wire.begin();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(true);
   WiFi.setAutoConnect(true);
   WiFi.setAutoReconnect(true);
   WiFi.begin();
+  
+  if (WiFi.SSID().length() > 0) {
+    int wifiRetry = 40; 
+    Serial.print(F("[Network] Connecting to stored WiFi ("));
+    Serial.print(WiFi.SSID());
+    Serial.print(F(")..."));
+    while (WiFi.status() != WL_CONNECTED && wifiRetry > 0) {
+      delay(500);
+      Serial.print(F("."));
+      wifiRetry--;
+      yield();
+    }
+    Serial.println();
+  } else {
+    Serial.println(F("[Network] No stored WiFi credentials found."));
+  }
+
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   ESP.wdtEnable(5000);
 #endif
@@ -885,43 +938,76 @@ ICACHE_FLASH_ATTR void setup() {
   } else {
     addDmesg(F("WiFi Not Connected (Auto)"));
   }
-  telnetServer.begin();
+  
   setupWebServer();
   LittleFS.begin();
   logResetReason(); 
-  char otaPass[16];
-  EEPROM.get(EEPROM_OTA_PASS_ADDR, otaPass);
-  if (otaPass[0] == 0xFF || otaPass[0] == 0x00) {
-    if (needsSetup) strcpy(otaPass, "admin");
-    else strcpy(otaPass, "DISABLED");
-  } else {
-    for(int i=0; i<16 && otaPass[i] != '\0'; i++) otaPass[i] ^= KERNEL_KEY;
-  }
+  char otaHash[33];
+  EEPROM.get(EEPROM_OTA_PASS_ADDR, otaHash);
+  otaHash[32] = '\0';
+  
   ArduinoOTA.setHostname("UniKernel-Node");
-  ArduinoOTA.setPassword(otaPass);
+  if (otaHash[0] != 0xFF && otaHash[0] != 0x00) {
+    ArduinoOTA.setPasswordHash(otaHash);
+  } else {
+    ArduinoOTA.setPassword("admin");
+  }
   ArduinoOTA.onStart([]() { addDmesg(F("OTA: Starting Update")); });
   ArduinoOTA.onEnd([]() { addDmesg(F("OTA: Update Finished")); });
   ArduinoOTA.onError(
       [](ota_error_t error) { addDmesg(F("OTA: Error occurred")); });
   MDNS.begin("unikernel");
 
-  static const uint8_t rsakey[] PROGMEM = {
-      0x30, 0x82, 0x01, 0x3a, 0x02, 0x01, 0x00, 0x02, 0x41, 0x00, 0xcb,
-      0x33, 0xe4, 0x0e, 0x56, 0x1d, 0x40, 0xab, 0x1e, 0x5a, 0x1d, 0x41,
-      0x3e, 0x6e, 0xf6, 0x76, 0x0d, 0x98, 0x6b, 0x82, 0x18, 0x77, 0x39,
-      0xf9, 0x7d, 0x0f, 0x3d, 0x15, 0x31, 0x93, 0xf4, 0x46, 0xc2, 0x15,
-      0x6e, 0xc1, 0x43, 0xd0, 0x8b, 0xa1, 0x6e, 0xf4, 0x69, 0x77, 0x87,
-      0x16, 0x95, 0x3c, 0x6b, 0x18, 0x48, 0x7d, 0x1f, 0x58, 0x4a, 0x6d,
-      0x7d, 0x1a, 0xcb, 0x02, 0x03, 0x01, 0x00, 0x01};
-  static const uint8_t rsacert[] PROGMEM = {
-      0x30, 0x82, 0x01, 0x31, 0x30, 0x81, 0xd8, 0xa0, 0x03, 0x02,
-      0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x0d, 0x06, 0x09, 0x2a,
-      0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00,
-      0x30, 0x11, 0x31, 0x0f, 0x30, 0x0d, 0x06, 0x03, 0x55, 0x04,
-      0x03, 0x0c, 0x06, 0x4b, 0x65, 0x72, 0x6e, 0x65, 0x6c};
+  static const uint8_t eckey[] PROGMEM = {
+      0x30, 0x77, 0x02, 0x01, 0x01, 0x04, 0x20, 0x25, 0xe8, 0xec, 0x1e, 0x7e,
+      0x5e, 0xd4, 0x54, 0x53, 0x6a, 0x80, 0xd0, 0xf3, 0xf8, 0x30, 0xe5, 0x36,
+      0x1a, 0xb2, 0x35, 0xfb, 0x82, 0xd7, 0x4a, 0x82, 0x73, 0x73, 0x15, 0x4c,
+      0x02, 0x49, 0xa2, 0xa0, 0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d,
+      0x03, 0x01, 0x07, 0xa1, 0x44, 0x03, 0x42, 0x00, 0x04, 0x4d, 0x8f, 0x0c,
+      0xd2, 0x99, 0xe6, 0x8d, 0xe6, 0xfb, 0xac, 0x8c, 0x5e, 0xfe, 0xa3, 0xe3,
+      0x99, 0x4b, 0xc8, 0x0c, 0x16, 0x26, 0x5f, 0xa1, 0xa4, 0x12, 0xdd, 0x71,
+      0x5c, 0x36, 0x8b, 0x3f, 0xe1, 0x9a, 0xe8, 0x4f, 0xfb, 0x2b, 0xbc, 0xd3,
+      0x6d, 0xa7, 0x07, 0x36, 0xf3, 0xd5, 0xba, 0x0a, 0x7e, 0xba, 0x7d, 0xec,
+      0xc3, 0x38, 0xd6, 0xca, 0xfb, 0x1c, 0xbf, 0x37, 0x44, 0x4a, 0x02, 0xcb,
+      0xf1};
+  static const uint8_t eccert[] PROGMEM = {
+      0x30, 0x82, 0x01, 0x7e, 0x30, 0x82, 0x01, 0x23, 0xa0, 0x03, 0x02, 0x01,
+      0x02, 0x02, 0x14, 0x32, 0x16, 0x17, 0x2b, 0xcb, 0x19, 0xd7, 0xd4, 0x80,
+      0x34, 0xc2, 0x5c, 0x7d, 0x19, 0x72, 0x06, 0x73, 0xa0, 0x5d, 0xea, 0x30,
+      0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x30,
+      0x14, 0x31, 0x12, 0x30, 0x10, 0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, 0x09,
+      0x55, 0x6e, 0x69, 0x4b, 0x65, 0x72, 0x6e, 0x65, 0x6c, 0x30, 0x1e, 0x17,
+      0x0d, 0x32, 0x36, 0x30, 0x35, 0x30, 0x37, 0x31, 0x32, 0x35, 0x38, 0x33,
+      0x34, 0x5a, 0x17, 0x0d, 0x33, 0x36, 0x30, 0x35, 0x30, 0x34, 0x31, 0x32,
+      0x35, 0x38, 0x33, 0x34, 0x5a, 0x30, 0x14, 0x31, 0x12, 0x30, 0x10, 0x06,
+      0x03, 0x55, 0x04, 0x03, 0x0c, 0x09, 0x55, 0x6e, 0x69, 0x4b, 0x65, 0x72,
+      0x6e, 0x65, 0x6c, 0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48,
+      0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03,
+      0x01, 0x07, 0x03, 0x42, 0x00, 0x04, 0x4d, 0x8f, 0x0c, 0xd2, 0x99, 0xe6,
+      0x8d, 0xe6, 0xfb, 0xac, 0x8c, 0x5e, 0xfe, 0xa3, 0xe3, 0x99, 0x4b, 0xc8,
+      0x0c, 0x16, 0x26, 0x5f, 0xa1, 0xa4, 0x12, 0xdd, 0x71, 0x5c, 0x36, 0x8b,
+      0x3f, 0xe1, 0x9a, 0xe8, 0x4f, 0xfb, 0x2b, 0xbc, 0xd3, 0x6d, 0xa7, 0x07,
+      0x36, 0xf3, 0xd5, 0xba, 0x0a, 0x7e, 0xba, 0x7d, 0xec, 0xc3, 0x38, 0xd6,
+      0xca, 0xfb, 0x1c, 0xbf, 0x37, 0x44, 0x4a, 0x02, 0xcb, 0xf1, 0xa3, 0x53,
+      0x30, 0x51, 0x30, 0x1d, 0x06, 0x03, 0x55, 0x1d, 0x0e, 0x04, 0x16, 0x04,
+      0x14, 0xe8, 0x2b, 0x36, 0xf6, 0x7b, 0x6a, 0x0f, 0xd3, 0xf9, 0xd8, 0xfa,
+      0xaa, 0x06, 0x6d, 0x2a, 0xe3, 0x50, 0xc7, 0x8b, 0xc8, 0x30, 0x1f, 0x06,
+      0x03, 0x55, 0x1d, 0x23, 0x04, 0x18, 0x30, 0x16, 0x80, 0x14, 0xe8, 0x2b,
+      0x36, 0xf6, 0x7b, 0x6a, 0x0f, 0xd3, 0xf9, 0xd8, 0xfa, 0xaa, 0x06, 0x6d,
+      0x2a, 0xe3, 0x50, 0xc7, 0x8b, 0xc8, 0x30, 0x0f, 0x06, 0x03, 0x55, 0x1d,
+      0x13, 0x01, 0x01, 0xff, 0x04, 0x05, 0x30, 0x03, 0x01, 0x01, 0xff, 0x30,
+      0x0a, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02, 0x03,
+      0x49, 0x00, 0x30, 0x46, 0x02, 0x21, 0x00, 0xa7, 0xbf, 0x32, 0xdb, 0x9e,
+      0x7e, 0x10, 0x67, 0x1e, 0xbd, 0x58, 0x66, 0x28, 0x8d, 0xbc, 0x49, 0xc7,
+      0x4a, 0x2f, 0x65, 0x7c, 0x06, 0xda, 0x25, 0xf2, 0x71, 0xca, 0x17, 0xb0,
+      0x45, 0xae, 0x08, 0x02, 0x21, 0x00, 0xd6, 0x61, 0x36, 0x49, 0x0c, 0x65,
+      0x0b, 0x70, 0xc3, 0x03, 0x6b, 0x5e, 0x25, 0x75, 0x70, 0x04, 0x4c, 0x12,
+      0xe9, 0xfd, 0xdc, 0xe0, 0x4c, 0x8f, 0x36, 0x0f, 0xcd, 0x5d, 0x2b, 0x7f,
+      0xf6, 0x59};
   
-  sshServer.setRSACert(new BearSSL::X509List(rsacert, sizeof(rsacert)),
-                       new BearSSL::PrivateKey(rsakey, sizeof(rsakey)));
+  sshServer.setECCert(new BearSSL::X509List(eccert, sizeof(eccert)),
+                       BR_KEYTYPE_EC,
+                       new BearSSL::PrivateKey(eckey, sizeof(eckey)));
   addDmesg(F("Secure Boot Complete (Optimized Mode)"));
 #endif
 
@@ -974,12 +1060,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
         return;
     }
     String pass = doc["pass"] | "";
-    char hashedInput[10];
-    char savedPass[10];
-    EEPROM.get(EEPROM_PASS_ADDR, savedPass);
-    hashPass(pass.c_str(), hashedInput);
-    if (!secureEquals(hashedInput, savedPass, 9)) {
-        webServer.send(401, "application/json", _OSTR("{\"error\":\"Unauthorized\"}"));
+    if (!checkWebAuth(pass, webServer.client().remoteIP())) {
+        webServer.send(401, "application/json", _OSTR("{\"error\":\"Unauthorized or Rate-limited\"}"));
         return;
     }
     int pin = doc["pin"] | 2;
@@ -991,12 +1073,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
 
   webServer.on("/api/stats", []() {
     if (webServer.hasArg("pass")) {
-        char hashedInput[10];
-        char savedPass[10];
-        EEPROM.get(EEPROM_PASS_ADDR, savedPass);
-        hashPass(webServer.arg("pass").c_str(), hashedInput);
-        if (!secureEquals(hashedInput, savedPass, 9)) {
-            webServer.send(401, "application/json", _OSTR("{\"error\":\"Unauthorized\"}"));
+        if (!checkWebAuth(webServer.arg("pass"), webServer.client().remoteIP())) {
+            webServer.send(401, "application/json", _OSTR("{\"error\":\"Unauthorized or Rate-limited\"}"));
             return;
         }
     } else {
@@ -1014,40 +1092,14 @@ ICACHE_FLASH_ATTR void setupWebServer() {
   });
 
   webServer.on("/api/bt", []() {
-    char savedPass[10];
-    EEPROM.get(EEPROM_PASS_ADDR, savedPass);
-    char hashedInput[10];
-    hashPass(webServer.arg("pass").c_str(), hashedInput);
-
-    if (!secureEquals(hashedInput, savedPass, 9)) {
-      webServer.send(401, "text/plain", "Unauthorized");
+    if (!checkWebAuth(webServer.arg("pass"), webServer.client().remoteIP())) {
+      webServer.send(401, "text/plain", "Unauthorized or Rate-limited");
       return;
     }
 
-    String host = webServer.header("Host");
-    bool hostAllowed = false;
-    String localIP = WiFi.localIP().toString();
-    if (host.length() == 0)
-      hostAllowed = true;
-    else if (host.startsWith("192.168."))
-      hostAllowed = true;
-    else if (host.startsWith("10."))
-      hostAllowed = true;
-    else if (host.startsWith("172."))
-      hostAllowed = true;
-    else if (host.startsWith("169.254."))
-      hostAllowed = true;
-    else if (host.startsWith("localhost"))
-      hostAllowed = true;
-    else if (host.startsWith("unikernel"))
-      hostAllowed = true;
-    else if (host.equals(localIP))
-      hostAllowed = true;
 
-    if (!hostAllowed) {
-      webServer.send(403, "text/plain", "CSRF Protection Triggered");
-      return;
-    }
+    webServer.send(403, "text/plain", "API Disabled: CSRF Hardening Active");
+    return;
 #if defined(ESP32)
     int val = webServer.arg("val").toInt();
     if (val == 1) {
@@ -1083,9 +1135,12 @@ ICACHE_FLASH_ATTR void processTriggers() {
     if (triggerTable[i].op == '>' && current > triggerTable[i].val) fire = true;
 
     if (fire) {
-      char buf[MAX_INPUT_LEN]; strcpy(buf, triggerTable[i].action);
+      char buf[MAX_INPUT_LEN]; 
+      strncpy(buf, triggerTable[i].action, MAX_INPUT_LEN - 1);
+      buf[MAX_INPUT_LEN - 1] = '\0';
       addDmesg(F("Trigger Fired!"));
-      executeCommand(buf, true);
+   
+      executeCommand(buf, false);
     }
   }
 }
@@ -1118,7 +1173,7 @@ ICACHE_FLASH_ATTR void loop() {
       sshAuthenticated = false; 
       ESP.wdtFeed(); 
       sshClient.println(F("\n--- UniKernel Secure Shell ---"));
-      sshClient.print(F("Login: "));
+      sshClient.print(F("Guest access. Type 'login [pass]' to begin: "));
       lastSSHActivity = millis();
     }
   }
@@ -1226,7 +1281,7 @@ ICACHE_FLASH_ATTR void loop() {
         telnetClient = tc;
         telnetAuthenticated = false;
         telnetClient.println(F("Welcome to UniKernel NetShell"));
-        telnetClient.print(F("Login: "));
+        telnetClient.print(F("Guest access. Type 'login [pass]' to begin: "));
      } else tc.stop();
   } 
   
@@ -1558,20 +1613,10 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 }
 
 ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
+  static int recursionDepth = 0;
   kPulse();
-  if (fromSerial && strncmp(line, "passwd", 6) == 0) {
-     
-      char *p = strchr(line, ' ');
-      if (p) {
-          while(*p == ' ') p++;
-          char hashed[10];
-          hashPass(p, hashed);
-          EEPROM.put(EEPROM_PASS_ADDR, hashed);
-          EEPROM.commit();
-          kprintln(F("Password updated via Serial Bypass."));
-          return;
-      }
-  }
+  
+ 
 
   char *cmd = line;
   char *args = NULL;
@@ -1579,6 +1624,11 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
 
   for (int i = 0; i < MAX_ALIAS; i++) {
     if (aliasTable[i].active && strncmp(line, aliasTable[i].name, strlen(aliasTable[i].name)) == 0) {
+
+      if (recursionDepth >= 3) {
+          kprintln(F("Error: Maximum alias recursion depth exceeded."));
+          return;
+      }
       char resolved[MAX_INPUT_LEN];
       char *space = strchr(line, ' ');
       if (space) {
@@ -1586,7 +1636,9 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       } else {
         strncpy(resolved, aliasTable[i].cmd, MAX_INPUT_LEN - 1);
       }
+      recursionDepth++;
       executeCommandInternal(resolved, fromSerial);
+      recursionDepth--;
       return;
     }
   }
@@ -1615,7 +1667,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
   bool isPasswd = (strcmp_P(cmd, PSTR("passwd")) == 0);
 
   if (!currentAuth && !isLogin && !isHelp && shellDepth == 0 &&
-      !isTelnetSafeCommand(cmd) && !(isPasswd && fromSerial)) {
+      !isTelnetSafeCommand(cmd)) {
     if (!fromSerial) { 
       kprintln(F("--- ACCESS DENIED ---"));
       kprintln(F("System is protected. Please type: login [your_password]"));
@@ -2501,13 +2553,21 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       char newPass[16];
       strncpy(newPass, args + 8, 15);
       newPass[15] = '\0';
-      char obfuscated[16];
-      strcpy(obfuscated, newPass);
-      for(int i=0; i<16 && obfuscated[i] != '\0'; i++) obfuscated[i] ^= KERNEL_KEY;
-      EEPROM.put(EEPROM_OTA_PASS_ADDR, obfuscated);
+
+      MD5Builder md5;
+      md5.begin();
+      md5.add(newPass);
+      md5.calculate();
+      String hash = md5.toString();
+      
+      char otaHash[33];
+      strncpy(otaHash, hash.c_str(), 32);
+      otaHash[32] = '\0';
+      
+      EEPROM.put(EEPROM_OTA_PASS_ADDR, otaHash);
       EEPROM.commit();
-      ArduinoOTA.setPassword(newPass);
-      kprintln(F("OTA Password updated and obfuscated in EEPROM."));
+      ArduinoOTA.setPasswordHash(otaHash);
+      kprintln(F("OTA Password updated and hashed in EEPROM."));
     } else {
       kprintln(F("Usage: ota [on/setpass new_password]"));
     }
@@ -2731,12 +2791,18 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       int found = -1;
       for (int i=0; i<MAX_TRIGS; i++) if (!triggerTable[i].active) { found = i; break; }
       if (found != -1) {
-        strcpy(triggerTable[found].cond, cond);
+      
+        strncpy(triggerTable[found].cond, cond, sizeof(triggerTable[found].cond) - 1);
+        triggerTable[found].cond[sizeof(triggerTable[found].cond) - 1] = '\0';
+        
         triggerTable[found].op = opStr[0];
         triggerTable[found].val = val;
-        strcpy(triggerTable[found].action, act);
+        
+        strncpy(triggerTable[found].action, act, sizeof(triggerTable[found].action) - 1);
+        triggerTable[found].action[sizeof(triggerTable[found].action) - 1] = '\0';
+        
         triggerTable[found].active = true;
-        kprintln(F("Trigger registered."));
+        kprintln(F("Trigger registered safely."));
       } else kprintln(F("Table full."));
     } else {
       for (int i=0; i<MAX_TRIGS; i++) if (triggerTable[i].active) {
@@ -2773,12 +2839,12 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       return;
     }
 
-    char savedPass[10];
-    char hashedInput[10];
+    char savedPass[17];
+    char hashedInput[17];
     EEPROM.get(EEPROM_PASS_ADDR, savedPass);
     hashPass(args, hashedInput);
 
-    if (secureEquals(hashedInput, savedPass, 9)) {
+    if (secureEquals(hashedInput, savedPass, 16)) {
       if (fromSerial) {
         serialAuthenticated = true;
         lastSerialActivity = millis();
@@ -2834,7 +2900,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       kprintln(F("Usage: passwd [min 4 chars]"));
       return;
     }
-    char hashedPass[10];
+    char hashedPass[17];
     char salt[PASS_SALT_LEN + 1];
 
     unsigned long entropy = micros() ^ analogRead(A0);
@@ -3090,7 +3156,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
         kprint(F("Connecting to "));
         kprintln(ssid);
         WiFi.disconnect();
-        WiFi.persistent(false);
+        WiFi.persistent(true);
         WiFi.mode(WIFI_STA);
         WiFi.setSleepMode(WIFI_NONE_SLEEP);
         WiFi.setAutoReconnect(true);

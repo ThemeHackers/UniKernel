@@ -62,9 +62,9 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `ping` | `ping [host]` | Test network connectivity to a remote host. |
 | `wget` | `wget [url] [filename]` | Retrieve data from the internet via HTTP protocol. |
 | `ntp` | `ntp` | Synchronize system time via Network Time Protocol. |
-| `telnet` | `telnet [on/off]` | Enable or disable remote access via Telnet. |
-| `web` | `web [on/off]` | Enable or disable the Web Dashboard interface. |
-| `ssh` | `ssh [on/off]` | Enable or disable the Encrypted Shell (Port 22). |
+| `telnet` | `telnet [on/off]` | Enable/Disable remote access (Unsafe, Disabled by default). |
+| `web` | `web [on/off]` | Enable/Disable the Web Dashboard (Hardened with Firewall). |
+| `ssh` | `ssh [on/off]` | Enable/Disable Encrypted Shell (**EC P-256 Elliptic Curve**). |
 | `bt` | `bt [on/off]` | Manage Bluetooth status (ESP32 only). |
 | `netstat` | `netstat` | Display active network services and ports. |
 
@@ -93,12 +93,12 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 ### 1.5 Security and Utilities
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| `login` | `login [password]` | Authenticate as root user. |
+| `login` | `login [password]` | Authenticate as root (Uses **Salted SHA-256**). |
 | `logout` | `logout` | Terminate the current session. |
-| `passwd` | `passwd [new_pass]` | Change the root password. |
-| `firewall` | `firewall allow [IP]` | Restrict remote access to a specific IP address. |
+| `passwd` | `passwd [new_pass]` | Change root password (128-bit entropy salted hash). |
+| `firewall` | `firewall allow [IP]` | Whitelist an IP for Shell, Web, and API access. |
 | `ota` | `ota on` | Enable wireless firmware updates. |
-| `ota` | `ota setpass [pass]` | Set a custom password for OTA updates. |
+| `ota` | `ota setpass [pass]` | Set OTA password (**MD5 Hash Storage**). |
 | `color` | `color [on/off]` | Enable or disable ANSI terminal colors. |
 | `export` | `export key=val` | Set an environment variable. |
 | `env` | `env` | List all active environment variables. |
@@ -113,11 +113,12 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 
 ## 2. Security and Access Protocols
 
-*   **Default OTA Password:** `unikernel` (Change immediately via `ota setpass`).
-*   **Authentication:** Sensitive commands require root privileges via `login`.
-*   **Firewall:** Use `firewall allow [Your_PC_IP]` to block unauthorized users.
+*   **Authentication:** Sensitive commands require root privileges. All passwords are secured with **Salted SHA-256 (16-byte salt)**.
+*   **Brute-Force Protection:** Exponential backoff (Cooldown) triggered after failed logins. 5 consecutive fails trigger a **300s system lockout**.
+*   **Encrypted Shell (SSH):** Advanced encryption using **Elliptic Curve P-256 (secp256r1)** for fast and secure remote management.
+*   **Hardened Firewall:** Whitelist your IP using `firewall allow [IP]`. This protects Serial, Telnet, SSH, and the **Web API/Dashboard**.
+*   **OTA Security:** Firmware updates are protected by **MD5 Hashed** credentials. Default: `admin`.
 *   **Session Security:** Automatic logout occurs after 5 minutes of inactivity.
-*   **Encrypted Shell:** Use `ssh on` for encrypted communication on Port 22.
 
 ## 3. Technical Specifications
 
