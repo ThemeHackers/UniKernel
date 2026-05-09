@@ -1195,6 +1195,47 @@ ICACHE_FLASH_ATTR void processTriggers() {
   }
 }
 
+void doTabCompletion() {
+  if (inputLen == 0) return;
+  inputBuffer[inputLen] = '\0';
+  
+  const char* cmds[] = {
+    "ls", "cd", "pwd", "cat", "echo", "rm", "mkdir", "touch", "wifi", "accel", 
+    "sys", "help", "clear", "reboot", "uptime", "free", "neofetch", "ping", 
+    "ifconfig", "hwinfo", "top", "ps", "login", "logout", "df", "dmesg"
+  };
+  int numCmds = 26;
+  
+  int matches = 0;
+  const char* match = NULL;
+  for (int i = 0; i < numCmds; i++) {
+    if (strncmp(inputBuffer, cmds[i], inputLen) == 0) {
+      matches++;
+      match = cmds[i];
+    }
+  }
+  
+  if (matches == 1) {
+    while (inputLen > 0) { kprint(F("\b \b")); inputLen--; }
+    strcpy(inputBuffer, match);
+    inputLen = strlen(inputBuffer);
+    kprint(inputBuffer);
+    kprint(F(" ")); 
+    inputBuffer[inputLen++] = ' ';
+    inputBuffer[inputLen] = '\0';
+  } else if (matches > 1) {
+    kprintln();
+    for (int i = 0; i < numCmds; i++) {
+      if (strncmp(inputBuffer, cmds[i], strlen(inputBuffer)) == 0) {
+        kprint(cmds[i]); kprint(F("  "));
+      }
+    }
+    kprintln();
+    printPrompt();
+    kprint(inputBuffer);
+  }
+}
+
 ICACHE_FLASH_ATTR void loop() {
   checkMemorySafeguard();
   processTriggers();
@@ -1365,8 +1406,6 @@ ICACHE_FLASH_ATTR void loop() {
       return;
     }
 
-    if (c >= 32 && c <= 126) Serial.print((char)c); 
-
     if (c == '\r' || c == '\n') {
       if ((c == '\n' && lastChar == '\r') || (c == '\r' && lastChar == '\n')) {
         lastChar = 0;
@@ -1404,6 +1443,8 @@ ICACHE_FLASH_ATTR void loop() {
         kprintln();
         printPrompt();
       }
+    } else if (c == '\t') {
+      doTabCompletion();
     } else {
       if (c == 0x1b) { inEscSeq = true; escState = 0; return; }
       if (inEscSeq) {
@@ -1436,6 +1477,7 @@ ICACHE_FLASH_ATTR void loop() {
       } else if (c >= 32 && c <= 126 && inputLen < MAX_INPUT_LEN - 1) {
         inputBuffer[inputLen] = c;
         inputLen++;
+        kprint((char)c);
       }
     }
   }
