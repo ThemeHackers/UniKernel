@@ -350,8 +350,8 @@ def process_gpu_request(req, addr):
             elif kernel_name == "hash_crack":
                 target, s, r = int(np.uint32(data[0])), int(np.int32(data[1])), int(np.int32(data[2]))
                 result = np.array([-1]).astype(np.int32)
-                g, b = func.get_max_potential_block_size(0)
-                g = min(g, (r + b - 1) // b)
+                b = 256 
+                g = (r + b - 1) // b
                 func(drv.InOut(result), np.uint32(target), np.int32(s), np.int32(r), block=(b,1,1), grid=(g, 1))
                 res["data"] = int(result[0])
                 res["kernel"] = "hash_crack"
