@@ -538,6 +538,22 @@ ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
     SerialBT.print(s);
 #endif
 }
+void kprint(char c) {
+  if (c == '\0') return;
+  if (redirectionFileIdx != -1) {
+    size_t len = strlen(vfs[redirectionFileIdx].content);
+    if (len < CONTENT_LEN - 1) {
+      vfs[redirectionFileIdx].content[len] = c;
+      vfs[redirectionFileIdx].content[len + 1] = '\0';
+    }
+    return;
+  }
+  Serial.write(c);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
+  if (telnetClient && telnetClient.connected()) telnetClient.write(c);
+  if (sshClient && sshClient.connected()) sshClient.write(c);
+#endif
+}
 ICACHE_FLASH_ATTR void kprint(const char *s) {
   if (redirectionFileIdx != -1) {
     strncat(vfs[redirectionFileIdx].content, s,
@@ -1471,14 +1487,16 @@ ICACHE_FLASH_ATTR void loop() {
         }
       }
 
-      lastChar = c;
-      if (c == 8 || c == 127) {
-        if (inputLen > 0) { inputLen--; inputBuffer[inputLen] = '\0'; kprint(F("\b \b")); }
-      } else if (c >= 32 && c <= 126 && inputLen < MAX_INPUT_LEN - 1) {
-        inputBuffer[inputLen] = c;
-        inputLen++;
-        kprint((char)c);
+    } else if (c == 8 || c == 127) {
+      if (inputLen > 0) {
+        inputLen--;
+        inputBuffer[inputLen] = '\0';
+        kprint('\b'); kprint(' '); kprint('\b');
       }
+    } else if (c >= 32 && c <= 126 && inputLen < MAX_INPUT_LEN - 1) {
+      inputBuffer[inputLen++] = c;
+      kprint((char)c);
+    }
     }
   }
 }
