@@ -176,35 +176,48 @@ Access your dashboard at `http://[ESP_IP]`. The Pro Dashboard includes real-time
 
 UniAccel is a distributed computing engine that offloads heavy mathematical and security tasks from the microcontroller to a powerful GPU Host (via `UniAccelHost.py`).
 
-### 7.1 Lightweight UniAccel Command Reference
+### 7.1 UniAccel Command Reference
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| `accel connect` | `accel connect [IP] [Port]` | Manually connect to a GPU Host. |
-| `accel discover` | `accel discover` | Auto-discover Host using mDNS (Zeroconf). |
-| `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking. |
-| `accel research` | `accel research prime [s] [r]` | High-speed Prime Number discovery. |
-| `accel research` | `accel research match [text] [pat]` | Parallel Pattern Matching in memory. |
-| `accel encrypt` | `accel encrypt [text] [key]` | Offload parallel XOR/Rotate encryption. |
-| `accel inject` | `accel inject [file.cu]` | JIT-Compile and run custom CUDA code. |
-| `accel bench` | `accel bench` | Run a 7-stage GPU Stress Test & Benchmark. |
-| `accel status` | `accel status` | Check connection and GPU telemetry. |
-| `accel disconnect`| `accel disconnect` | Terminate the accelerator link. |
+| `accel connect` | `accel connect [IP] [Port]` | Connect to a GPU Host (Default port: 81). |
+| `accel discover` | `accel discover` | Auto-discover Host via **mDNS (Zeroconf)**. |
+| `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking (MurmurMix). |
+| `accel research` | `accel research prime [s] [r]` | Massively parallel Prime Number search. |
+| `accel research` | `accel research match [text] [pat]` | High-speed Pattern Scanning in constant memory. |
+| `accel encrypt` | `accel encrypt [text] [key]` | Offload complex XOR/Rotate/Shift encryption to GPU. |
+| `accel bench` | `accel bench` | Run a **5-stage GPU Performance Analysis**. |
+| `accel status` | `accel status` | View connection state and real-time **GPU Telemetry**. |
+| `accel disconnect`| `accel disconnect` | Close the link to the accelerator host. |
 
-### 7.2 Lightweight Advanced GPU Kernels
-The UniAccel Host supports the following specialized kernels for `gpu_exec`:
-- **`render_3d`**: Real-time Raymarching using Signed Distance Fields (SDF) and Metaballs.
-- **`vision_filter`**: Parallel image processing (Grayscale conversion and enhancement).
-- **`signal_proc`**: Magnitude calculation for high-frequency sensor signal data.
-- **`matrix_mul`**: Matrix multiplication for AI Inference and mathematical layers.
-- **`pattern_match`**: Parallel scanning for specific data sequences or signatures.
-- **`hash_crack`**: Brute-force cracking for MurmurHash3-style mixers.
-- **`prime_search`**: Sieve-like prime number search across large ranges.
+### 7.2 Advanced GPU Kernels
+The UniAccel engine leverages CUDA kernels for extreme throughput:
+- **`render_3d`**: Real-time Raymarching/SDF rendering (Visualized in ASCII).
+- **`vision_filter`**: Grayscale and contrast enhancement for vision data.
+- **`signal_proc`**: Complex magnitude calculation for DSP tasks.
+- **`matrix_mul`**: Shared-memory optimized Tiled Matrix Multiplication.
+- **`hash_crack`**: Brute-force search for target hash values.
+- **`prime_search`**: Sieve of Eratosthenes variant for parallel prime detection.
+- **`pattern_match`**: Constant-memory optimized byte-sequence searching.
 
-### 7.3 Setup & Requirements
-1.  **Host**: Ensure you have a Windows PC with an NVIDIA GPU and latest drivers.
-2.  **Run**: Double-click `UniAccelHost.exe` in the root directory.
-3.  **Client**: Ensure ESP32/ESP8266 is on the same WiFi network.
-4.  **Connect**: Type `accel discover` or `accel connect [IP]` on the shell.
+### 7.3 Performance Benchmarking (`accel bench`)
+The built-in benchmark measures:
+1.  **Memory Bandwidth**: Host-to-Device and Device-to-Host transfer speeds (GB/s).
+2.  **Compute Throughput**: Raw floating-point performance (GFLOPS).
+3.  **Shared Memory Latency**: Access speed of on-chip low-latency memory.
+4.  **Atomic Operations**: Throughput of synchronized global memory writes.
+5.  **Launch Latency**: Driver overhead for triggering kernel execution.
+
+### 7.4 Security & Transport
+- **mDNS Discovery**: Automatically finds `_uniaccel._tcp.local` services.
+- **MessagePack Serialization**: Compact binary data exchange.
+- **XOR Obfuscation**: All packets are obfuscated with a dynamic XOR key to prevent sniffing.
+- **GPU Telemetry**: Real-time monitoring of Temperature, Load, VRAM, and Power.
+
+### 7.5 Setup & Requirements
+1.  **Host**: Windows PC with an **NVIDIA GPU** (Compute Capability 3.0+).
+2.  **Dependencies**: Install `PyCUDA`, `msgpack`, `zeroconf`, and `pynvml`.
+3.  **Run**: Launch `UniAccelHost.py`. It will auto-detect MSVC and CUDA environments.
+4.  **Connect**: On UniKernel, type `accel discover` to sync with the host.
 
 ---
 
