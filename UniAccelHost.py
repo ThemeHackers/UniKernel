@@ -187,28 +187,44 @@ __global__ void hash_crack_kernel(int *result, unsigned int target, int start, i
 }
 
 __global__ void prime_search_kernel(int *found_primes, int *count, int start, int range) {
+    __shared__ int local_count;
+    __shared__ int local_primes[256];
+    if (threadIdx.x == 0) local_count = 0;
+    __syncthreads();
+
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= range) return;
-    int val = start + idx;
-    if (val < 2) return;
-    bool is_prime = true;
-    for (int i = 2; i * i <= val; i++) {
-        if (val % i == 0) { is_prime = false; break; }
+    if (idx < range) {
+        int val = start + idx;
+        if (val >= 2) {
+            bool is_prime = true;
+            for (int i = 2; i * i <= val; i++) {
+                if (val % i == 0) { is_prime = false; break; }
+            }
+            if (is_prime) {
+                int pos = atomicAdd(&local_count, 1);
+                if (pos < 256) local_primes[pos] = val;
+            }
+        }
     }
-    if (is_prime) {
-        int pos = atomicAdd(count, 1);
-        if (pos < 1000) found_primes[pos] = val;
+    __syncthreads();
+
+    if (threadIdx.x == 0 && local_count > 0) {
+        int global_pos = atomicAdd(count, local_count);
+        for(int i=0; i < min(local_count, 256); i++) {
+            if (global_pos + i < 1000) found_primes[global_pos + i] = local_primes[i];
+        }
     }
 }
 
-__global__ void vision_filter_kernel(unsigned char *pixels, int width, int height) {
+__global__ void vision_filter_kernel(uchar4 *pixels, int width, int height) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
-    int idx = (y * width + x) * 3; 
-    unsigned char r = pixels[idx], g = pixels[idx+1], b = pixels[idx+2];
-    unsigned char gray = (unsigned char)(0.299f*r + 0.587f*g + 0.114f*b);
-    pixels[idx] = pixels[idx+1] = pixels[idx+2] = gray;
+    
+    int idx = y * width + x;
+    uchar4 p = pixels[idx];
+    unsigned char gray = (unsigned char)(0.299f*p.x + 0.587f*p.y + 0.114f*p.z);
+    pixels[idx] = make_uchar4(gray, gray, gray, p.w);
 }
 
 __global__ void signal_proc_kernel(float *real, float *imag, float *magnitude, int len) {
@@ -216,12 +232,14 @@ __global__ void signal_proc_kernel(float *real, float *imag, float *magnitude, i
     if (idx < len) magnitude[idx] = sqrtf(real[idx]*real[idx] + imag[idx]*imag[idx]);
 }
 
-__global__ void pattern_match_kernel(unsigned char *data, int data_len, unsigned char *pattern, int pat_len, int *found_idx) {
+__constant__ unsigned char CONST_PATTERN[256];
+
+__global__ void pattern_match_kernel(unsigned char *data, int data_len, int pat_len, int *found_idx) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx <= data_len - pat_len) {
         bool match = true;
         for (int i = 0; i < pat_len; i++) {
-            if (data[idx + i] != pattern[i]) { match = false; break; }
+            if (data[idx + i] != CONST_PATTERN[i]) { match = false; break; }
         }
         if (match) atomicExch(found_idx, idx);
     }
@@ -247,6 +265,25 @@ __global__ void matrix_mul_kernel(float *A, float *B, float *C, int N) {
     }
     if (row < N && col < N) C[row * N + col] = sum;
 }
+
+__global__ void shared_mem_bench_kernel(float *out) {
+    __shared__ float sData[1024];
+    int tid = threadIdx.x;
+    sData[tid] = (float)tid;
+    __syncthreads();
+    for(int i=0; i<100; i++) {
+        sData[tid] = sData[tid] * 1.0001f + sData[(tid + 1) % 1024];
+    }
+    if(tid == 0) out[0] = sData[0];
+}
+
+__global__ void atomic_bench_kernel(int *counter, int iterations) {
+    for(int i=0; i<iterations; i++) {
+        atomicAdd(counter, 1);
+    }
+}
+
+__global__ void null_kernel() { }
 """
 
 
@@ -267,7 +304,7 @@ try:
     compile_options = [arch_flag, "-O3", "--use_fast_math", "--allow-unsupported-compiler", "-Xcompiler", "/wd4819"]
 
     try:
-        current_mod = SourceModule(BASE_CODE, options=compile_options, no_extern_c=True, keep=False)
+        current_mod = SourceModule(BASE_CODE, options=compile_options, no_extern_c=False, keep=False)
     except Exception as e:
         console.print(f"[bold red]CUDA Compile Error:[/bold red] {str(e)}")
         try:
@@ -308,6 +345,7 @@ def process_gpu_request(req, addr):
                 dest = np.zeros(w*h).astype(np.float32)
                 func(drv.Out(dest), np.int32(w), np.int32(h), np.float32(time.time()), block=(16,16,1), grid=((w+15)//16,(h+15)//16))
                 res["data"] = dest.tolist() if w <= 32 else "omitted"
+                res["width"], res["height"] = w, h
                 res["kernel"] = "render_3d"
             elif kernel_name == "hash_crack":
                 target, s, r = int(np.uint32(data[0])), int(np.int32(data[1])), int(np.int32(data[2]))
@@ -317,10 +355,113 @@ def process_gpu_request(req, addr):
                 func(drv.InOut(result), np.uint32(target), np.int32(s), np.int32(r), block=(b,1,1), grid=(g, 1))
                 res["data"] = int(result[0])
                 res["kernel"] = "hash_crack"
-         
+            elif kernel_name == "prime_search":
+                s, r = int(data[0]), int(data[1])
+                found = np.zeros(1000).astype(np.int32)
+                count = np.array([0]).astype(np.int32)
+                func(drv.Out(found), drv.InOut(count), np.int32(s), np.int32(r), block=(256,1,1), grid=((r+255)//256, 1))
+                res["data"] = found[:count[0]].tolist()
+                res["kernel"] = "prime_search"
+            elif kernel_name == "pattern_match":
+                blob = np.array(data[0]).astype(np.uint8)
+                pat = np.array(data[1]).astype(np.uint8)
+                pat_len = len(pat)
+
+                if pat_len <= 256:
+                    const_pat_ptr, _ = current_mod.get_global("CONST_PATTERN")
+                    drv.memcpy_htod(const_pat_ptr, pat)
+                else:
+                    return {"status": "error", "message": "Pattern too long for constant memory (max 256 bytes)"}
+
+                found_idx = np.array([-1]).astype(np.int32)
+                func(drv.In(blob), np.int32(len(blob)), np.int32(pat_len), drv.InOut(found_idx), block=(256,1,1), grid=((len(blob)+255)//256, 1))
+                res["data"] = int(found_idx[0])
+                res["kernel"] = "pattern_match"
+            else:
+                return {"status": "error", "message": f"Unknown kernel: {kernel_name}"}
             res["compute_ms"] = round((time.time()-start)*1000, 2)
+            
+        elif cmd == "gpu_encrypt":
+            text = req.get("text", "")
+            key = req.get("key", 0x5A)
+            data = np.frombuffer(text.encode(), dtype=np.uint8).copy()
+            func = current_mod.get_function("encrypt_kernel")
+            if len(data) > 0:
+                func(drv.InOut(data), np.int32(len(data)), np.uint8(key), block=(len(data),1,1), grid=(1,1))
+            res["data"] = data.tolist()
+            res["cmd"] = "gpu_encrypt"
+            res["compute_ms"] = round((time.time()-start)*1000, 2)
+            
+        elif cmd == "gpu_bench":
+
+            results = {}
+            
+            def measure_perf(kernel_func, args, block, grid, iterations=50, warmup=10):
+                for _ in range(warmup): kernel_func(*args, block=block, grid=grid)
+                start_evt, end_evt = drv.Event(), drv.Event()
+                start_evt.record()
+                for _ in range(iterations): kernel_func(*args, block=block, grid=grid)
+                end_evt.record()
+                end_evt.synchronize()
+                return start_evt.time_till(end_evt) / iterations
+
+          
+            data_size = 1024 * 1024 * 32 
+            test_data = np.random.randn(data_size).astype(np.float32)
+            t_start = time.time()
+            gpu_ptr = drv.mem_alloc(test_data.nbytes)
+            drv.memcpy_htod(gpu_ptr, test_data)
+            drv.memcpy_dtoh(test_data, gpu_ptr)
+            bandwidth_gb = (test_data.nbytes * 2) / ((time.time() - t_start) * 1e9)
+            results["bandwidth_gbs"] = round(bandwidth_gb, 2)
+
+
+            N = 1024
+            A, B, C = np.random.randn(N,N).astype(np.float32), np.random.randn(N,N).astype(np.float32), np.zeros((N,N)).astype(np.float32)
+            mm_func = current_mod.get_function("matrix_mul_kernel")
+            avg_ms = measure_perf(mm_func, [drv.In(A), drv.In(B), drv.Out(C), np.int32(N)], block=(16, 16, 1), grid=((N+15)//16, (N+15)//16))
+            results["compute_gflops"] = round((2.0 * N**3) / (avg_ms * 1e-3 * 1e9), 2)
+            results["avg_latency_ms"] = round(avg_ms, 4)
+
+            
+            shm_func = current_mod.get_function("shared_mem_bench_kernel")
+            out_v = np.zeros(1).astype(np.float32)
+            shm_ms = measure_perf(shm_func, [drv.Out(out_v)], block=(1024,1,1), grid=(1,1))
+            results["shm_lat_ms"] = round(shm_ms, 5)
+
+    
+            atom_func = current_mod.get_function("atomic_bench_kernel")
+            counter = np.array([0]).astype(np.int32)
+            atom_ms = measure_perf(atom_func, [drv.InOut(counter), np.int32(1000)], block=(256,1,1), grid=(40,1))
+            results["atomic_ms"] = round(atom_ms, 5)
+
+          
+            null_func = current_mod.get_function("null_kernel")
+            null_ms = measure_perf(null_func, [], block=(1,1,1), grid=(1,1))
+            results["launch_lat_us"] = round(null_ms * 1000.0, 2) 
+
+            res["data"] = results
+            res["cmd"] = "gpu_bench"
+            res["compute_ms"] = round((time.time()-start)*1000, 2)
+        else:
+            return {"status": "error", "message": f"Unknown command: {cmd}"}
+        
+      
+        if nv_handle:
+            try:
+                res["telemetry"] = {
+                    "temp": nvmlDeviceGetTemperature(nv_handle, 0),
+                    "util": nvmlDeviceGetUtilizationRates(nv_handle).gpu,
+                    "mem": nvmlDeviceGetMemoryInfo(nv_handle).used // 1048576,
+                    "pwr": nvmlDeviceGetPowerUsage(nv_handle) / 1000.0,
+                    "clk": nvmlDeviceGetClockInfo(nv_handle, 0)
+                }
+            except: pass
+
         return res
-    except Exception as e: return {"status": "error", "message": str(e)}
+    except Exception as e: 
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
     finally: cuda_ctx.pop()
 
 async def handle_unikernel(websocket):
@@ -329,15 +470,47 @@ async def handle_unikernel(websocket):
     connected_clients[addr] = {"time": time.strftime("%H:%M:%S"), "tasks": 0}
     try:
         async for message in websocket:
-            if isinstance(message, bytes): message = bytes([b ^ 0x5A for b in message])
             try:
+                if isinstance(message, bytes): 
+                    message = bytes([b ^ 0x5A for b in message])
+                
                 req = msgpack.unpackb(message)
                 res = await asyncio.to_thread(process_gpu_request, req, addr)
+                
                 resp_bytes = msgpack.packb(res)
                 await websocket.send(bytes([b ^ 0x5A for b in resp_bytes]))
                 connected_clients[addr]["tasks"] += 1
-            except: pass
-    finally: connected_clients.pop(addr, None)
+            except websockets.exceptions.ConnectionClosed:
+                break
+            except OSError as e:
+                if e.errno == 121:
+                    add_log(f"[yellow]Network Timeout ({addr}): Semaphore expired (WinError 121)[/yellow]")
+                else:
+                    add_log(f"[red]OS Error ({addr}): {str(e)}[/red]")
+                break
+            except Exception as e:
+                add_log(f"[red]Task Error ({addr}): {str(e)}[/red]")
+    except (websockets.exceptions.ConnectionClosed, OSError):
+        pass
+    except Exception as e:
+        add_log(f"[red]Connection Handler Error ({addr}): {str(e)}[/red]")
+    finally: 
+        connected_clients.pop(addr, None)
+        add_log(f"Client disconnected: [yellow]{addr}[/yellow]")
+
+async def server_main():
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    info = ServiceInfo("_uniaccel._tcp.local.", f"{hostname}._uniaccel._tcp.local.", addresses=[socket.inet_aton(local_ip)], port=81, properties={"v": "1.1"}, server=f"{hostname}.local.")
+    aiozc = AsyncZeroconf()
+    await aiozc.async_register_service(info)
+    try:
+      
+        async with websockets.serve(handle_unikernel, "0.0.0.0", 81, ping_timeout=60, ping_interval=30):
+            while True: await asyncio.sleep(1)
+    finally:
+        await aiozc.async_unregister_service(info)
+        await aiozc.async_close()
 
 def generate_dashboard():
     layout = Layout()

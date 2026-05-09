@@ -220,36 +220,21 @@ void handleAccelCommand(char* args) {
         }
     } else if (strcmp_P(sub, PSTR("bench")) == 0) {
         if (!accelConnected) { kprintln(F("Not connected.")); return; }
-        kprintColor(CLR_RED);
-        kprintln(F("=== UniAccel GPU EXTREME Analytics ==="));
+        kprintColor(CLR_MAG);
+        kprintln(F("UniAccel GPU Benchmark"));
         kprintColor(CLR_RST);
-        kprintln(F("Starting 7-Stage Stress Test (Extreme Mode)..."));
+        kprintln(F("Performing Memory & Compute Stress Analysis..."));
         
-        int res[] = {8, 16, 32, 64, 128, 256, 512};
-        for(int i=0; i<7; i++) {
-            kprint(F("Stage ")); kprint(i+1); kprint(F(": Testing ")); 
-            kprint(res[i]); kprint(F("x")); kprintln(res[i]);
-            
-            JsonDocument doc;
-            doc["cmd"] = "gpu_exec";
-            doc["kernel"] = "render_3d";
-            JsonArray d = doc["data"].to<JsonArray>();
-            d.add(res[i]); d.add(res[i]);
-            
-            uint8_t buf[128];
-            size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-            for(size_t j=0; j<len; j++) buf[j] ^= XOR_KEY;
-            
-            accelStartTime = millis();
-            webSocket.sendBIN(buf, len);
-            
-            unsigned long waitStart = millis();
-            while(millis() - waitStart < 3000) {
-                webSocket.loop();
-                yield();
-            }
-        }
-        kprintln(F("\x1b[32m[Benchmark] Efficiency Report Generated.\x1b[0m"));
+        JsonDocument doc;
+        doc["cmd"] = "gpu_bench";
+        
+        uint8_t buf[128];
+        size_t len = serializeMsgPack(doc, buf, sizeof(buf));
+        for(size_t j=0; j<len; j++) buf[j] ^= XOR_KEY;
+        
+        accelStartTime = millis();
+        webSocket.sendBIN(buf, len);
+        kprintln(F("Request sent. Waiting for deep analysis..."));
     } else if (strcmp_P(sub, PSTR("discover")) == 0) {
         discoverAccelHost();
     } else if (strcmp_P(sub, PSTR("status")) == 0) {
@@ -303,22 +288,40 @@ void onGpuResponse(uint8_t * payload, size_t length) {
             kprintColor(CLR_MAG); kprint(tel["clk"].as<int>()); kprintln(F("MHz")); kprintColor(CLR_RST);
         }
         if (res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0) {
-            JsonArray data = res["data"];
-            int total = data.size();
-            int side = sqrt(total);
-            if (side <= 32) { 
+            int w = res.containsKey("width") ? res["width"].as<int>() : 0;
+            int h = res.containsKey("height") ? res["height"].as<int>() : 0;
+            
+            if (w <= 32 && res["data"].is<JsonArray>()) { 
+                JsonArray data = res["data"];
+                int total = data.size();
+                int side = sqrt(total);
                 kprintln(F("--- GPU 3D RENDER ---"));
                 for (int i = 0; i < total; i++) {
                     float val = data[i];
                     if (val > 0) kprint(F("#")); else kprint(F("."));
                     if ((i + 1) % side == 0) kprintln();
                 }
-                kprintln(F("-------------------------------"));
+            kprintln(F("-------------------------------"));
             } else {
                 kprint(F("[UniAccel] High-Res Render Complete ("));
-                kprint(side); kprint(F("x")); kprint(side);
+                if (w > 0) {
+                    kprint(w); kprint(F("x")); kprint(h);
+                } else {
+                    kprint(F("Unknown Res"));
+                }
                 kprintln(F(") - Skipping ASCII Draw"));
             }
+        } else if (res.containsKey("cmd") && strcmp(res["cmd"], "gpu_bench") == 0) {
+            JsonObject data = res["data"];
+            kprintColor(CLR_GRN);
+            kprintln(F("\n[Benchmark Results]"));
+            kprintColor(CLR_RST);
+            kprint(F(" - Memory Bandwidth: ")); kprintColor(CLR_YLW); kprint(data["bandwidth_gbs"].as<float>()); kprintln(F(" GB/s")); kprintColor(CLR_RST);
+            kprint(F(" - Compute Throughput: ")); kprintColor(CLR_YLW); kprint(data["compute_gflops"].as<float>()); kprintln(F(" GFLOPS")); kprintColor(CLR_RST);
+            kprint(F(" - Shared Memory Acc: ")); kprintColor(CLR_YLW); kprint(data["shm_lat_ms"].as<float>()); kprintln(F(" ms")); kprintColor(CLR_RST);
+            kprint(F(" - Atomic Ops Speed: ")); kprintColor(CLR_YLW); kprint(data["atomic_ms"].as<float>()); kprintln(F(" ms")); kprintColor(CLR_RST);
+            kprint(F(" - Kernel Launch Lat: ")); kprintColor(CLR_YLW); kprint(data["launch_lat_us"].as<float>()); kprintln(F(" us")); kprintColor(CLR_RST);
+            kprintln(F("--------------------------------------"));
         } else if ((res.containsKey("cmd") && strcmp(res["cmd"], "gpu_encrypt") == 0) || 
                    (res.containsKey("kernel") && strcmp(res["kernel"], "encrypt") == 0)) {
             JsonArray data = res["data"];
@@ -333,7 +336,11 @@ void onGpuResponse(uint8_t * payload, size_t length) {
         } else {
             kprint(F("[UniAccel] Result: "));
             String output;
-            serializeJson(res["data"], output);
+            if (res["data"].is<JsonArray>() || res["data"].is<JsonObject>()) {
+                serializeJson(res["data"], output);
+            } else {
+                output = res["data"].as<String>();
+            }
             kprintln(output.c_str());
         }
         if (res.containsKey("compute_ms")) {
