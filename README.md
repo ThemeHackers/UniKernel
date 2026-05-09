@@ -171,4 +171,41 @@ To send data to an external server or Home Assistant:
 Access your dashboard at `http://[ESP_IP]`. The Pro Dashboard includes real-time RAM gauges and remote power management tools.
 
 ---
-**UniKernel Pro** - *Smarter, Faster, More Secure.*
+
+## 7. Lightweight UniAccel GPU Acceleration
+
+UniAccel is a distributed computing engine that offloads heavy mathematical and security tasks from the microcontroller to a powerful GPU Host (via `UniAccelHost.py`).
+
+### 7.1 Lightweight UniAccel Command Reference
+| Command | Usage | Description |
+| :--- | :--- | :--- |
+| `accel connect` | `accel connect [IP] [Port]` | Manually connect to a GPU Host. |
+| `accel discover` | `accel discover` | Auto-discover Host using mDNS (Zeroconf). |
+| `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking. |
+| `accel research` | `accel research prime [s] [r]` | High-speed Prime Number discovery. |
+| `accel research` | `accel research match [text] [pat]` | Parallel Pattern Matching in memory. |
+| `accel encrypt` | `accel encrypt [text] [key]` | Offload parallel XOR/Rotate encryption. |
+| `accel inject` | `accel inject [file.cu]` | JIT-Compile and run custom CUDA code. |
+| `accel bench` | `accel bench` | Run a 7-stage GPU Stress Test & Benchmark. |
+| `accel status` | `accel status` | Check connection and GPU telemetry. |
+| `accel disconnect`| `accel disconnect` | Terminate the accelerator link. |
+
+### 7.2 Lightweight Advanced GPU Kernels
+The UniAccel Host supports the following specialized kernels for `gpu_exec`:
+- **`render_3d`**: Real-time Raymarching using Signed Distance Fields (SDF) and Metaballs.
+- **`vision_filter`**: Parallel image processing (Grayscale conversion and enhancement).
+- **`signal_proc`**: Magnitude calculation for high-frequency sensor signal data.
+- **`matrix_mul`**: Matrix multiplication for AI Inference and mathematical layers.
+- **`pattern_match`**: Parallel scanning for specific data sequences or signatures.
+- **`hash_crack`**: Brute-force cracking for MurmurHash3-style mixers.
+- **`prime_search`**: Sieve-like prime number search across large ranges.
+
+### 7.3 Setup & Requirements
+1.  **Host**: Ensure you have a Windows PC with an NVIDIA GPU and latest drivers.
+2.  **Run**: Double-click `UniAccelHost.exe` in the root directory.
+3.  **Client**: Ensure ESP32/ESP8266 is on the same WiFi network.
+4.  **Connect**: Type `accel discover` or `accel connect [IP]` on the shell.
+
+---
+
+

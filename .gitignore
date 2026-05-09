@@ -12,4 +12,8 @@
 *.swo
 *~
 .DS_Store
+.vscode
+dist/
 build/
+UniAccelHost.py
+UniAccelHost.spec
