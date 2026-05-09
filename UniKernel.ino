@@ -1225,8 +1225,7 @@ ICACHE_FLASH_ATTR void loop() {
       sshClient = c;
       sshAuthenticated = false; 
       ESP.wdtFeed(); 
-      sshClient.println(F("\n--- UniKernel Secure Shell ---"));
-      sshClient.print(F("Guest access. Type 'login [pass]' to begin: "));
+      printPrompt();
       lastSSHActivity = millis();
     }
   }
@@ -1331,8 +1330,7 @@ ICACHE_FLASH_ATTR void loop() {
      if (!telnetClient || !telnetClient.connected()) {
         telnetClient = tc;
         telnetAuthenticated = false;
-        telnetClient.println(F("Welcome to UniKernel NetShell"));
-        telnetClient.print(F("Guest access. Type 'login [pass]' to begin: "));
+        printPrompt();
      } else tc.stop();
   } 
 
