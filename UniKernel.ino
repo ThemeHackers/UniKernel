@@ -3558,4 +3558,3 @@ ICACHE_FLASH_ATTR void taskBlink() {
   state = !state;
   fastDigitalWrite(LED_BUILTIN, state ? HIGH : LOW);
 }
-
