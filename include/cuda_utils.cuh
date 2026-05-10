@@ -5,9 +5,7 @@
 #include <cuda_runtime.h>
 #include <math.h>
 
-/**
- * @brief Macro to check for CUDA errors
- */
+
 #define CUDA_CHECK(call) \
     do { \
         cudaError_t err = call; \
@@ -16,6 +14,18 @@
             exit(EXIT_FAILURE); \
         } \
     } while (0)
+
+
+#define FULL_MASK 0xFFFFFFFF
+
+
+#if __CUDA_ARCH__ >= 700
+    #define HAS_INDEPENDENT_SCHEDULING
+#endif
+
+#if __CUDA_ARCH__ >= 800
+    #define HAS_AMPERE_FEATURES
+#endif
 
 
 static __device__ __inline__ float3 add_float3(float3 a, float3 b) {

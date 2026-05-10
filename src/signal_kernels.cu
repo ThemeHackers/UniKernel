@@ -2,7 +2,8 @@
 
 extern "C" {
 
-__global__ void vision_filter_kernel(uchar4 *pixels, int width, int height) {
+__global__ __launch_bounds__(256, 1)
+void vision_filter_kernel(uchar4 *pixels, int width, int height) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -17,7 +18,8 @@ __global__ void vision_filter_kernel(uchar4 *pixels, int width, int height) {
 
 __constant__ unsigned char CONST_PATTERN[256];
 
-__global__ void pattern_match_kernel(unsigned char *data, int data_len, int pat_len, int *found_idx) {
+__global__ __launch_bounds__(256, 1)
+void pattern_match_kernel(unsigned char *data, int data_len, int pat_len, int *found_idx) {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx <= data_len - pat_len) {
         bool match = true;

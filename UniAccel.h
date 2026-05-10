@@ -16,6 +16,10 @@ extern char accelHost[16];
 extern int accelPort;
 extern int accelRetryCount;
 extern unsigned long accelStartTime;
+extern bool accelAnimating;
+extern bool accelChatMode;
+extern char currentModelName[32];
+extern bool accelModelLoaded;
 
 extern const char* CLR_RST;
 extern const char* CLR_RED;
@@ -28,6 +32,7 @@ extern const char* CLR_CYN;
 void initUniAccel();
 void loopUniAccel();
 void handleAccelCommand(char* args);
+void handleHfCommand(char* args);
 void onGpuResponse(uint8_t * payload, size_t length);
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void discoverAccelHost();

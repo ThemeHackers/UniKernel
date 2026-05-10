@@ -17,3 +17,5 @@ dist/
 build/
 .venv/
 UniAccelHost.spec
+UniAccelHost/
+Unikernel.bin

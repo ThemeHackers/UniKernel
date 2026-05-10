@@ -601,6 +601,11 @@ ICACHE_FLASH_ATTR void kprint(int n) {
   itoa(n, buf, 10);
   kprint(buf);
 }
+ICACHE_FLASH_ATTR void kprint(float n) {
+  char buf[16];
+  dtostrf(n, 4, 2, buf);
+  kprint(buf);
+}
 
 ICACHE_FLASH_ATTR void kprint(unsigned int n) {
   char buf[12];
@@ -661,12 +666,8 @@ char *kTrim(char *s) {
 }
 
 void redrawPrompt() {
-  kprint("\r");
-  kprint(CLR_CYN);
-  kprint("root@esp8266:");
-  kprint(currentPath);
-  kprint("# ");
-  kprint(CLR_RST);
+  kprint(F("\r\033[K")); 
+  printPrompt();
   kprint(inputBuffer);
 }
 
@@ -846,15 +847,24 @@ ICACHE_FLASH_ATTR void initFS() {
 }
 
 ICACHE_FLASH_ATTR void printPrompt() {
-  bool currentAuth = serialAuthenticated || telnetAuthenticated;
+  if (accelChatMode) {
+    kprintColor(CLR_MAG);
+    kprint(currentModelName);
+    kprint(F("@"));
+    kprint(accelHost);
+    kprint(F("> "));
+    kprintColor(CLR_RST);
+    return;
+  }
+  bool currentAuth = serialAuthenticated || telnetAuthenticated || sshAuthenticated;
+  kprintColor(CLR_CYN);
   kprint(currentAuth ? F("root@") : F("guest@"));
   kprint(F(BOARD_NAME));
-  kprintColor(CLR_WHT);
   kprint(F(":"));
   kprintColor(CLR_BLU);
   kprint(currentPath);
   kprintColor(CLR_RST);
-  kprint(F("# "));
+  kprint(currentAuth ? F("# ") : F("> "));
 }
 
 ICACHE_FLASH_ATTR void checkMemorySafeguard() {
@@ -955,6 +965,7 @@ ICACHE_FLASH_ATTR void setup() {
   Wire.begin();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   WiFi.mode(WIFI_STA);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
   WiFi.persistent(true);
   WiFi.setAutoConnect(true);
   WiFi.setAutoReconnect(true);
@@ -1265,7 +1276,7 @@ ICACHE_FLASH_ATTR void loop() {
     webServer.handleClient();
 
   if (!accelStopRequested)
-    webSocket.loop();
+    loopUniAccel();
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   if (otaEnabled) {
@@ -1358,15 +1369,26 @@ ICACHE_FLASH_ATTR void loop() {
 
   if (serialAuthenticated && isTimeout(lastSerialActivity, SESSION_TIMEOUT)) {
     serialAuthenticated = false;
+    accelChatMode = false;
     Serial.println(F("\nSerial session timeout. Logged out."));
     printPrompt();
   }
 
   if (sshAuthenticated && isTimeout(lastSSHActivity, SESSION_TIMEOUT)) {
     sshAuthenticated = false;
+    accelChatMode = false;
     if (sshClient && sshClient.connected()) {
         sshClient.println(F("\nSSH session timeout. Closing connection."));
         sshClient.stop();
+    }
+  }
+
+  if (telnetAuthenticated && isTimeout(lastTelnetActivity, SESSION_TIMEOUT)) {
+    telnetAuthenticated = false;
+    accelChatMode = false;
+    if (telnetClient && telnetClient.connected()) {
+        telnetClient.println(F("\nTelnet session timeout. Closing connection."));
+        telnetClient.stop();
     }
   }
 
@@ -1412,6 +1434,10 @@ ICACHE_FLASH_ATTR void loop() {
 #endif
 
   if (hasInput) {
+    if (fromSerial) lastSerialActivity = millis();
+    else if (isSSHInput) lastSSHActivity = millis();
+    else lastTelnetActivity = millis();
+
     if (!fromSerial && isLockedOut) {
        kprintln(F("\n[!] Access Denied: Brute-force Lockout Active."));
        return;
@@ -1444,22 +1470,59 @@ ICACHE_FLASH_ATTR void loop() {
         bool isLogin = (strcmp(firstCmd, "login") == 0);
         bool isHelp = (strcmp(firstCmd, "help") == 0);
         bool isPasswd = (strcmp(firstCmd, "passwd") == 0);
+        bool isLogout = (strcmp(firstCmd, "logout") == 0 || strcmp(firstCmd, "exit") == 0);
+        bool isClear = (strcmp(firstCmd, "clear") == 0);
+        bool isChat = (strcmp(firstCmd, "chat") == 0);
 
-        if (!currentAuth && !isLogin && !isHelp && !isPasswd) {
-          kprintln(F("--- ACCESS DENIED ---"));
+        if (!currentAuth) accelChatMode = false; 
+
+        if (!currentAuth && !isLogin && !isHelp && !isPasswd && !isLogout && !isClear && !isChat) {
+            kprintln(F("--- ACCESS DENIED ---"));
         } else {
-          parseAndExecute(inputBuffer, MAX_INPUT_LEN, fromSerial);
+            if (accelChatMode) {
+                char* p = inputBuffer;
+                while(isspace((unsigned char)*p)) p++;
+                char* end = (strlen(p) > 0) ? (p + strlen(p) - 1) : p;
+                while(end > p && isspace((unsigned char)*end)) *end-- = '\0';
+
+                if (strcmp(p, "exit") == 0 || strcmp(p, "/exit") == 0 || strcmp(p, "quit") == 0) {
+                    accelChatMode = false;
+                    kprintln();
+                    redrawPrompt();
+                    inputLen = 0;
+                    memset(inputBuffer, 0, sizeof(inputBuffer));
+                    return;
+                }
+
+                if (strlen(p) > 0) {
+                    kprintColor(CLR_CYN);
+                    kprintln(F("\n[AI Assistant is thinking...]"));
+                    kprintColor(CLR_RST);
+                    JsonDocument doc;
+                    doc["cmd"] = "ask";
+                    doc["prompt"] = p;
+                    uint8_t buffer[512];
+                    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+                    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+                    webSocket.sendBIN(buffer, len);
+                }
+                inputLen = 0;
+                memset(inputBuffer, 0, sizeof(inputBuffer));
+                return; 
+            } else {
+                parseAndExecute(inputBuffer, MAX_INPUT_LEN, fromSerial);
+            }
         }
 
         if (inputLen > 0 && (historyCount == 0 || strcmp(inputBuffer, cmdHistory[(historyWriteIdx + MAX_HISTORY - 1) % MAX_HISTORY]) != 0)) {
-          strncpy(cmdHistory[historyWriteIdx], inputBuffer, MAX_INPUT_LEN - 1);
-          historyWriteIdx = (historyWriteIdx + 1) % MAX_HISTORY;
-          if (historyCount < MAX_HISTORY) historyCount++;
+            strncpy(cmdHistory[historyWriteIdx], inputBuffer, MAX_INPUT_LEN - 1);
+            historyWriteIdx = (historyWriteIdx + 1) % MAX_HISTORY;
+            if (historyCount < MAX_HISTORY) historyCount++;
         }
         historyViewIdx = -1;
         inputLen = 0;
         memset(inputBuffer, 0, sizeof(inputBuffer));
-        printPrompt();
+        redrawPrompt();
       } else {
         kprintln();
         printPrompt();
@@ -2524,6 +2587,11 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
 #endif
   } else if (strcmp_P(cmd, PSTR("accel")) == 0) {
     handleAccelCommand(args);
+  } else if (strcmp_P(cmd, PSTR("hf")) == 0) {
+    handleHfCommand(args);
+  } else if (strcmp_P(cmd, PSTR("chat")) == 0) {
+    char chatArgs[] = "chat";
+    handleAccelCommand(chatArgs);
   } else if (strcmp_P(cmd, PSTR("sleep")) == 0) {
     int sec = atoi_safe(args);
     if (sec <= 0)
@@ -2622,7 +2690,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
                "rm, info, save, load, lfs, chown, chmod"));
     kprintln(F("Hardw: on, off, gpio, pinmode, write, read, pwm, i2c"));
     kprintln(F("Net  : wifi, bt, ifconfig, ping, wget, ntp, telnet, web, ssh, "
-               "netstat, accel"));
+               "netstat, accel, chat, hf"));
     kprintln(F("Sys  : ps, top, sys [diag/audit/backup], date, uptime, uname, hwinfo, neofetch, cpu, sleep, dmesg, free, clear, reboot, boot, df, whoami"));
     kprintln(F("Secur: login, logout, passwd, firewall, ota, color, export, "
                "env, sh, cron, delay, kill, bg"));
@@ -2998,6 +3066,7 @@ ICACHE_FLASH_ATTR void executeCommandInternal(char *line, bool fromSerial) {
       }
     }
   } else if (strcmp_P(cmd, PSTR("logout")) == 0 || strcmp_P(cmd, PSTR("exit")) == 0) {
+    accelChatMode = false;
     if (fromSerial) {
       serialAuthenticated = false;
       kprintln(F("Logged out."));

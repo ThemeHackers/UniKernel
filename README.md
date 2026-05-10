@@ -2,7 +2,7 @@
 
 UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resource management. It features a Virtual File System (VFS), multitasking task management, and integrated security protocols.
 
-![UniKernel Dashboard](image.png)
+![UniKernel Dashboard](assets/image.png)
 
 
 ---
@@ -181,6 +181,7 @@ UniAccel is a distributed computing engine that offloads heavy mathematical and 
 | :--- | :--- | :--- |
 | `accel connect` | `accel connect [IP] [Port]` | Connect to a GPU Host (Default port: 81). |
 | `accel discover` | `accel discover` | Auto-discover Host via **mDNS (Zeroconf)**. |
+| `accel load`     | `accel load [model]`        | Pre-load an AI model (e.g., `TinyLlama/TinyLlama-1.1B-Chat-v1.0`) into GPU VRAM. |
 | `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking (MurmurMix). |
 | `accel research` | `accel research prime [s] [r]` | Massively parallel Prime Number search. |
 | `accel research` | `accel research match [text] [pat]` | High-speed Pattern Scanning in constant memory. |
@@ -198,8 +199,23 @@ The UniAccel engine leverages CUDA kernels for extreme throughput:
 - **`hash_crack`**: Brute-force search for target hash values.
 - **`prime_search`**: Sieve of Eratosthenes variant for parallel prime detection.
 - **`pattern_match`**: Constant-memory optimized byte-sequence searching.
+- **`render_3d`**: High-performance binary 3D rasterizer with zero-JSON overhead.
+- **`rsa_2048`**: RSA-2048 private key operation accelerated via CUDA.
 
-### 7.3 Performance Benchmarking (`accel bench`)
+### 7.3 AI-Accelerated Chat (`chat` / `accel chat`)
+UniKernel now features a dedicated AI Shell powered by TinyLlama on the GPU Host.
+
+- **`chat`**: Enter the interactive AI Chat mode.
+- **`accel ask <prompt>`**: Query the AI directly from the system shell.
+
+**Inside AI Chat Mode:**
+You can use **Slash Commands** to control the session:
+- `/exit`: Stop AI generation and return to the system shell.
+- `/clear`: Clear the chat screen.
+- `/status`: Show real-time GPU telemetry (Temp, Util, VRAM).
+- `/help`: Show the AI chat help menu.
+
+### 7.4 Performance Benchmarking (`accel bench`)
 The built-in benchmark measures:
 1.  **Memory Bandwidth**: Host-to-Device and Device-to-Host transfer speeds (GB/s).
 2.  **Compute Throughput**: Raw floating-point performance (GFLOPS).
@@ -218,6 +234,26 @@ The built-in benchmark measures:
 2.  **Dependencies**: Install `PyCUDA`, `msgpack`, `zeroconf`, and `pynvml`.
 3.  **Run**: Launch `UniAccelHost.py`. It will auto-detect MSVC and CUDA environments.
 4.  **Connect**: On UniKernel, type `accel discover` to sync with the host.
+
+### 7.6 Hugging Face CLI (`hf`)
+The `hf` command suite allows managing AI model authentication and offline capabilities directly from the ESP8266 shell.
+
+| Command | Usage | Description |
+| :--- | :--- | :--- |
+| `hf token` | `hf token <token>` | Set your Hugging Face Access Token for gated models (e.g., Gemma). |
+| `hf status` | `hf status` | Check if the GPU Host is authenticated and view current status. |
+| `hf offline` | `hf offline` | Force the GPU Host into **Offline Mode** (Loads only from local cache). |
+| `hf help` | `hf help` | Display the Hugging Face CLI help menu. |
+
+**Handling Gated Models:**
+If you receive a `403 Forbidden` or `Gated Repo` error when using `accel load`, follow these steps:
+1.  Visit the model page on Hugging Face and click **"Accept License"**.
+2.  Generate a **Read Token** in your Hugging Face settings.
+3.  On the UniKernel shell, type `hf token your_token_here`.
+4.  Retry `accel load`.
+
+**Offline Usage:**
+If your GPU Host has restricted internet access, use `hf offline` to prevent the system from trying to connect to the Hugging Face Hub. This ensures the system only attempts to load models that are already stored in the host's local cache.
 
 ---
 

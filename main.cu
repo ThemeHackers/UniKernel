@@ -9,6 +9,7 @@
 #include "math_kernels.cu"
 #include "signal_kernels.cu"
 #include "bench_kernels.cu"
+#include "rsa_kernels.cu"
 
 
 
