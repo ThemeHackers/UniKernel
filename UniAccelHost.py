@@ -123,6 +123,7 @@ def get_telemetry():
     except: return {}
 
 def process_gpu_request(req, addr):
+    global current_hf_model
     if not current_mod or not cuda_ctx: return {"status": "error", "message": "GPU Not Ready"}
     cuda_ctx.push()
     try:
@@ -193,21 +194,18 @@ def process_gpu_request(req, addr):
 
         elif cmd == "load_hf":
             model_id = req.get("model_id")
-            # Short-name resolution
-            presets = {
-                "tiny": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-                "phi": "microsoft/phi-2",
-                "gpt2": "gpt2",
-                "stable": "stabilityai/stable-code-3b"
-            }
-            if model_id in presets:
-                model_id = presets[model_id]
+
+          
+            if not model_id:
+                res["status"] = "error"
+                res["message"] = "No model_id provided."
+                return res
+
                 
             console.print(f"[bold yellow][HF][/bold yellow] Loading model: [cyan]{model_id}[/cyan]...")
 
             try:
                 device = "cuda:0" if torch.cuda.is_available() else "cpu"
-                global current_hf_model
                 current_hf_model = pipeline(
                     "text-generation",
                     model=model_id,
@@ -235,7 +233,6 @@ def process_gpu_request(req, addr):
                 res["status"] = "ok"
 
         elif cmd == "gpu_unload":
-            global current_hf_model
             if current_hf_model:
                 del current_hf_model
                 current_hf_model = None
@@ -249,12 +246,7 @@ def process_gpu_request(req, addr):
             res["status"] = "ok"
 
         elif cmd == "gpu_list":
-            res["data"] = {
-                "tiny": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-                "phi": "microsoft/phi-2",
-                "gpt2": "gpt2",
-                "stable": "stabilityai/stable-code-3b"
-            }
+            res["data"] = "Custom model_id required for loading."
             res["status"] = "ok"
 
 
