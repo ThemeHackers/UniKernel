@@ -183,8 +183,7 @@ UniAccel is a distributed computing engine that offloads heavy mathematical and 
 | `accel discover` | `accel discover` | Auto-discover Host via **mDNS (Zeroconf)**. |
 | `accel load`     | `accel load [model]`        | Pre-load an AI model (e.g., `TinyLlama/TinyLlama-1.1B-Chat-v1.0`) into GPU VRAM. |
 | `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking (MurmurMix). |
-| `accel research` | `accel research prime [s] [r]` | Massively parallel Prime Number search. |
-| `accel research` | `accel research match [text] [pat]` | High-speed Pattern Scanning in constant memory. |
+| `accel research` | `accel research rsa` | RSA-2048 high-speed modular exponentiation. |
 | `accel encrypt` | `accel encrypt [text] [key]` | Offload complex XOR/Rotate/Shift encryption to GPU. |
 | `accel bench` | `accel bench` | Run a **5-stage GPU Performance Analysis**. |
 | `accel status` | `accel status` | View connection state and real-time **GPU Telemetry**. |
@@ -193,13 +192,8 @@ UniAccel is a distributed computing engine that offloads heavy mathematical and 
 ### 7.2 Advanced GPU Kernels
 The UniAccel engine leverages CUDA kernels for extreme throughput:
 - **`render_3d`**: Real-time Raymarching/SDF rendering (Visualized in ASCII).
-- **`vision_filter`**: Grayscale and contrast enhancement for vision data.
-- **`signal_proc`**: Complex magnitude calculation for DSP tasks.
 - **`matrix_mul`**: Shared-memory optimized Tiled Matrix Multiplication.
 - **`hash_crack`**: Brute-force search for target hash values.
-- **`prime_search`**: Sieve of Eratosthenes variant for parallel prime detection.
-- **`pattern_match`**: Constant-memory optimized byte-sequence searching.
-- **`render_3d`**: High-performance binary 3D rasterizer with zero-JSON overhead.
 - **`rsa_2048`**: RSA-2048 private key operation accelerated via CUDA.
 
 ### 7.3 AI-Accelerated Chat (`chat` / `accel chat`)
@@ -209,11 +203,7 @@ UniKernel now features a dedicated AI Shell powered by TinyLlama on the GPU Host
 - **`accel ask <prompt>`**: Query the AI directly from the system shell.
 
 **Inside AI Chat Mode:**
-You can use **Slash Commands** to control the session:
-- `/exit`: Stop AI generation and return to the system shell.
-- `/clear`: Clear the chat screen.
-- `/status`: Show real-time GPU telemetry (Temp, Util, VRAM).
-- `/help`: Show the AI chat help menu.
+- Type `exit` or `quit` to return to the system shell.
 
 ### 7.4 Performance Benchmarking (`accel bench`)
 The built-in benchmark measures:

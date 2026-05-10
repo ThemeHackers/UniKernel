@@ -1,17 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
 
+# Core packages that need full collection
+packages = ['rich', 'websockets', 'zeroconf', 'msgpack', 'pynvml', 'accelerate']
 datas = [('main.cu', '.'), ('include', 'include'), ('src', 'src')]
 binaries = []
 hiddenimports = []
 
-
-packages = ['rich', 'websockets', 'zeroconf', 'torch', 'transformers', 'accelerate', 'msgpack', 'pynvml']
 for pkg in packages:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
+
+# Targeted collection for heavy weights to avoid redundant analysis
+datas += collect_data_files('torch')
+datas += collect_data_files('transformers')
+hiddenimports += collect_submodules('torch')
+hiddenimports += collect_submodules('transformers')
+
+# Aggressive exclusion of unused heavy dependencies
+excluded_modules = [
+    'tensorflow', 'tensorboard', 'keras', 'matplotlib', 'pandas', 'scipy', 
+    'sklearn', 'grpc', 'boto3', 'botocore', 'IPython', 'PIL', 'cv2',
+    'openvino', 'onnxruntime', 'tcl', 'tk', 'tkinter', 'notebook', 'jedi'
+]
 
 a = Analysis(
     ['UniAccelHost.py'],
@@ -22,7 +35,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excluded_modules,
     noarchive=False,
     optimize=0,
 )
@@ -37,7 +50,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False, # UPX is very slow for large ML binaries
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -51,7 +64,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='UniAccelHost',
 )
