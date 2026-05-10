@@ -40,6 +40,15 @@ char currentModelName[32] = "tinyllama";
 unsigned long lastFrameTime = 0;
 
 bool accelModelLoaded = false;
+unsigned long lastRequestStartTime = 0;
+static uint8_t renderBuffer[1024];
+
+uint8_t hex2int(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return 0;
+}
 
 void initUniAccel() {}
 
@@ -49,12 +58,15 @@ void loopUniAccel() {
   if (!accelStopRequested) {
     webSocket.loop();
     if (accelConnected && accelAnimating && (millis() - lastFrameTime > 100)) {
-      JsonDocument doc;
-      doc["cmd"] = "gpu_exec";
+      static JsonDocument doc;
+      doc.clear();
+   
+      doc["cmd"] = "gpu_physics"; 
       doc["kernel"] = "render_3d";
-      uint8_t buffer[64];
+      uint8_t buffer[256];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
       for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+      lastRequestStartTime = millis();
       webSocket.sendBIN(buffer, len);
       lastFrameTime = millis();
     }
@@ -158,7 +170,8 @@ void handleAccelCommand(char *args) {
       return;
     }
 
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "gpu_inject";
     doc["code"] = vfs[fIdx].content;
     uint8_t buffer[CONTENT_LEN + 128];
@@ -182,7 +195,8 @@ void handleAccelCommand(char *args) {
     int keyVal = 0x5A;
     sscanf(subArgs, "%63s %x", textBuf, &keyVal);
 
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "gpu_encrypt";
     doc["text"] = textBuf;
     doc["key"] = (uint8_t)keyVal;
@@ -227,7 +241,8 @@ void handleAccelCommand(char *args) {
             F("Usage: accel research crack [target_hash] [start] [range]"));
         return;
       }
-      JsonDocument doc;
+      static JsonDocument doc;
+      doc.clear();
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "hash_crack";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -250,7 +265,8 @@ void handleAccelCommand(char *args) {
         kprintln(F("Usage: accel research prime [start] [range]"));
         return;
       }
-      JsonDocument doc;
+      static JsonDocument doc;
+      doc.clear();
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "prime_search";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -272,7 +288,8 @@ void handleAccelCommand(char *args) {
         kprintln(F("Usage: accel research match [text] [pattern]"));
         return;
       }
-      JsonDocument doc;
+      static JsonDocument doc;
+      doc.clear();
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "pattern_match";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -295,7 +312,8 @@ void handleAccelCommand(char *args) {
     } else if (strcmp(rType, "rsa") == 0) {
       kprintln(F("RSA 2048-bit High-Throughput Acceleration..."));
 
-      JsonDocument doc;
+      static JsonDocument doc;
+      doc.clear();
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "rsa_2048";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -334,7 +352,8 @@ void handleAccelCommand(char *args) {
 
     kprintln(F("Performing Memory & Compute Stress Analysis..."));
 
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "gpu_bench";
 
     uint8_t buf[128];
@@ -395,7 +414,8 @@ void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "gpu_list";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -409,7 +429,8 @@ void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "gpu_unload";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -427,7 +448,8 @@ void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel load [model_id/preset]"));
       return;
     }
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "load_hf";
     doc["model_id"] = subArgs;
     uint8_t buffer[256];
@@ -447,7 +469,8 @@ void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel ask [prompt]"));
       return;
     }
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "ask";
     doc["prompt"] = subArgs;
     uint8_t buffer[512];
@@ -456,6 +479,53 @@ void handleAccelCommand(char *args) {
       buffer[i] ^= XOR_KEY;
     webSocket.sendBIN(buffer, len);
     kprintln(F("Thinking..."));
+  } else if (strcmp_P(sub, PSTR("physics")) == 0) {
+    if (!accelConnected) {
+      kprintln(F("Not connected."));
+      return;
+    }
+    accelAnimating = true; 
+    static JsonDocument doc;
+    doc.clear();
+    doc["cmd"] = "gpu_physics";
+    uint8_t buffer[64];
+    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    lastRequestStartTime = millis();
+    webSocket.sendBIN(buffer, len);
+    kprintln(F("Starting N-Body Physics Simulation..."));
+  } else if (strcmp_P(sub, PSTR("signal")) == 0) {
+    if (!accelConnected) {
+      kprintln(F("Not connected."));
+      return;
+    }
+    static JsonDocument doc;
+    doc.clear();
+    doc["cmd"] = "gpu_signal";
+    JsonArray data = doc["data"].to<JsonArray>();
+    for (int i = 0; i < 64; i++) {
+        data.add(sin(i * 0.2) + ((rand() % 100) / 100.0) * 0.5);
+    }
+    uint8_t buffer[1024];
+    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    lastRequestStartTime = millis();
+    webSocket.sendBIN(buffer, len);
+    kprintln(F("Offloading FFT to GPU..."));
+  } else if (strcmp_P(sub, PSTR("cluster")) == 0) {
+    if (!accelConnected) {
+      kprintln(F("Not connected."));
+      return;
+    }
+    static JsonDocument doc;
+    doc.clear();
+    doc["cmd"] = "gpu_cluster_list";
+    uint8_t buffer[64];
+    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    lastRequestStartTime = millis();
+    webSocket.sendBIN(buffer, len);
+    kprintln(F("Requesting Cluster Node List..."));
   } else {
 
     kprintColor(CLR_CYN);
@@ -464,7 +534,7 @@ void handleAccelCommand(char *args) {
     kprintln(
         F("Usage: accel "
           "[connect/load/ask/chat/animate/stop/list/unload/discover/research/bench/"
-          "status/disconnect]"));
+          "status/physics/signal/cluster/disconnect]"));
   }
 }
 
@@ -472,13 +542,15 @@ void onGpuResponse(uint8_t *payload, size_t length) {
   for (size_t i = 0; i < length; i++)
     payload[i] ^= XOR_KEY;
 
-  JsonDocument res;
+  static JsonDocument res;
+  res.clear();
   DeserializationError error = deserializeMsgPack(res, payload);
   if (error) {
     error = deserializeJson(res, payload);
     if (error) {
       kprintColor(CLR_RED);
-      kprintln(F("Error: Invalid response format"));
+      kprint(F("GPU Decode Error: "));
+      kprintln(error.c_str());
       kprintColor(CLR_RST);
       return;
     }
@@ -490,8 +562,8 @@ void onGpuResponse(uint8_t *payload, size_t length) {
     int side = 0;
 
     if (accelAnimating && isRender) {
-      side = sqrt(res["data"].size());
-      kprint("\033[s");
+      side = res.containsKey("height") ? res["height"].as<int>() : 24;
+
       for (int i = 0; i < side + 2; i++)
         kprint("\033[A");
     }
@@ -531,20 +603,41 @@ void onGpuResponse(uint8_t *payload, size_t length) {
       int h = res.containsKey("height") ? res["height"].as<int>() : 0;
 
       if (w <= 48) {
-        float* dPtr = nullptr; int tot = 0;
-        if (res.containsKey("bin")) {
-            dPtr = (float*)res["data"].as<const char*>();
-            tot = res["data"].size() / 4;
+        float* dPtr = nullptr; 
+        uint8_t* uPtr = nullptr;
+        int tot = 0;
+        if (res.containsKey("hex")) {
+            const char* hex = res["data"].as<const char*>();
+            int hexLen = strlen(hex);
+            tot = hexLen / 2;
+            if (tot > 1024) tot = 1024;
+            for (int i = 0; i < tot; i++) {
+                renderBuffer[i] = (hex2int(hex[i*2]) << 4) | hex2int(hex[i*2+1]);
+            }
+            uPtr = renderBuffer;
+        } else if (res.containsKey("bin")) {
+            size_t bLen = res["data"].size();
+            if (bLen == w * h) {
+                uPtr = (uint8_t*)res["data"].as<const char*>();
+                tot = bLen;
+            } else { 
+                dPtr = (float*)res["data"].as<const char*>();
+                tot = bLen / 4;
+            }
         } else {
             JsonArray data = res["data"];
             tot = data.size();
         }
 
-        if (dPtr || res["data"].is<JsonArray>()) {
-            int s = sqrt(tot);
+        if (dPtr || uPtr || res["data"].is<JsonArray>()) {
+            int s = w > 0 ? w : sqrt(tot);
             kprintln(F("--- GPU 3D RENDER ---"));
             for (int i = 0; i < tot; i++) {
-                float v = dPtr ? dPtr[i] : res["data"][i].as<float>();
+                float v = 0;
+                if (dPtr) v = dPtr[i];
+                else if (uPtr) v = uPtr[i] / 255.0f;
+                else v = res["data"][i].as<float>();
+
                 if (v > 0.8f) kprint(F("@"));
                 else if (v > 0.6f) kprint(F("#"));
                 else if (v > 0.4f) kprint(F("*"));
@@ -552,8 +645,7 @@ void onGpuResponse(uint8_t *payload, size_t length) {
                 else kprint(F(" "));
                 if ((i + 1) % s == 0) kprintln();
             }
-            if (accelAnimating) kprint("\033[u");
-            else kprintln(F("-------------------------------"));
+            if (!accelAnimating) kprintln(F("-------------------------------"));
         }
       } else {
         kprint(F("High-Res Complete ("));
@@ -619,6 +711,30 @@ void onGpuResponse(uint8_t *payload, size_t length) {
                 kprint(rPtr[i], HEX); kprint(F(" "));
             }
         }
+    } else if (res.containsKey("kernel") && strcmp(res["kernel"], "signal_fft") == 0) {
+        JsonArray data = res["data"];
+        kprintln(F("\nFFT Magnitude Spectrum:"));
+        for (int i = 0; i < data.size() / 2; i++) {
+            float v = data[i];
+            int bars = (int)(v * 20);
+            kprint(i); kprint(F(": "));
+            for(int j=0; j<bars; j++) kprint(F("|"));
+            kprintln();
+        }
+    } else if (res.containsKey("kernel") && strcmp(res["kernel"], "cluster_list") == 0) {
+        JsonArray nodes = res["data"];
+        kprintColor(CLR_CYN);
+        kprintln(F("\n--- UniKernel Cluster Nodes ---"));
+        kprintColor(CLR_RST);
+        for (JsonObject node : nodes) {
+            kprint(F("Node: ")); kprint(node["ip"].as<const char*>());
+            kprint(F(" | Req: ")); kprint(node["req"].as<int>());
+            kprint(F(" | Uptime: ")); kprint(node["uptime"].as<int>());
+            kprintln(F("s"));
+        }
+        kprintColor(CLR_CYN);
+        kprintln(F("-------------------------------"));
+        kprintColor(CLR_RST);
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_delta") == 0) {
         if (res.containsKey("data")) {
             String delta = res["data"].as<String>();
@@ -672,7 +788,7 @@ void onGpuResponse(uint8_t *payload, size_t length) {
       }
     }
     if (res.containsKey("compute_ms") && !accelChatMode && !accelAnimating) {
-      unsigned long rtt = millis() - accelStartTime;
+      unsigned long rtt = millis() - lastRequestStartTime;
       kprint(F("Compute: "));
       kprint(res["compute_ms"].as<float>());
       kprint(F("ms | RTT: "));
@@ -724,7 +840,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     kprintln(F("Connected to GPU Host Successfully"));
     kprintColor(CLR_RST);
     {
-      JsonDocument doc;
+      static JsonDocument doc;
+      doc.clear();
       doc["cmd"] = "gpu_list";
       uint8_t buffer[64];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -747,7 +864,8 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
 void accelExec(const char *kernel, JsonArray data) {
   if (!accelConnected)
     return;
-  JsonDocument doc;
+  static JsonDocument doc;
+  doc.clear();
   doc["cmd"] = "gpu_exec";
   doc["kernel"] = kernel;
   doc["data"] = data;
@@ -775,7 +893,8 @@ void handleHfCommand(char *args) {
       kprintln(F("Usage: hf token <token>"));
       return;
     }
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "hf_token";
     doc["token"] = subArgs;
     uint8_t buffer[256];
@@ -784,14 +903,16 @@ void handleHfCommand(char *args) {
     webSocket.sendBIN(buffer, len);
     kprintln(F("Sending token to GPU Host..."));
   } else if (strcmp(sub, "status") == 0) {
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "hf_status";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
     for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "offline") == 0) {
-    JsonDocument doc;
+    static JsonDocument doc;
+    doc.clear();
     doc["cmd"] = "hf_offline";
     doc["value"] = true;
     uint8_t buffer[64];

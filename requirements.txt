@@ -11,3 +11,4 @@ rich
 pycuda
 transformers
 accelerate
+aiohttp

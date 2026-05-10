@@ -1136,7 +1136,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
         webServer.send(400, "application/json", _OSTR("{\"error\":\"Bad Request\"}"));
         return;
     }
-    StaticJsonDocument<256> doc;
+    static JsonDocument doc;
+    doc.clear();
     DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
     if (error) {
         webServer.send(400, "application/json", _OSTR("{\"error\":\"Invalid JSON\"}"));
@@ -1498,7 +1499,8 @@ ICACHE_FLASH_ATTR void loop() {
                     kprintColor(CLR_CYN);
                     kprintln(F("\n[AI Assistant is thinking...]"));
                     kprintColor(CLR_RST);
-                    JsonDocument doc;
+                    static JsonDocument doc;
+                    doc.clear();
                     doc["cmd"] = "ask";
                     doc["prompt"] = p;
                     uint8_t buffer[512];

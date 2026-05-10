@@ -14,6 +14,8 @@ import traceback
 import warnings
 import subprocess
 import logging
+import aiohttp
+from aiohttp import web
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 from zeroconf.asyncio import AsyncZeroconf
 
@@ -72,6 +74,7 @@ cuda_ctx = None
 nv_handle = None
 current_hf_model = None
 stop_requested = False
+PARTICLE_STATES = {}
 
 
 KERNEL_CACHE = {}
@@ -132,22 +135,31 @@ try:
 except Exception as e:
     console.print(f"[bold red]GPU Init Error:[/bold red] {e}")
 
+LAST_TELEMETRY = {}
+LAST_TELEMETRY_TIME = 0
+
 def get_telemetry():
+    global LAST_TELEMETRY_TIME, LAST_TELEMETRY
     if not nv_handle: return {}
+    now = time.time()
+    if now - LAST_TELEMETRY_TIME < 0.5:
+        return LAST_TELEMETRY
     try:
-        return {
+        LAST_TELEMETRY = {
             "temp": nvmlDeviceGetTemperature(nv_handle, 0),
             "util": nvmlDeviceGetUtilizationRates(nv_handle).gpu,
             "mem": nvmlDeviceGetMemoryInfo(nv_handle).used // 1048576,
             "pwr": nvmlDeviceGetPowerUsage(nv_handle) / 1000.0,
             "clk": nvmlDeviceGetClockInfo(nv_handle, 0)
         }
+        LAST_TELEMETRY_TIME = now
+        return LAST_TELEMETRY
     except: return {}
 
 from transformers import TextIteratorStreamer
 from threading import Thread
 
-def process_gpu_request(req, addr, websocket_send_func, loop):
+def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
     global current_hf_model, stop_requested
     if not cuda_ctx: return
     
@@ -156,7 +168,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
         cmd = req.get("cmd")
         
 
-        if cmd in ["gpu_exec", "gpu_bench", "gpu_encrypt", "gpu_inject"]:
+        if cmd in ["gpu_exec", "gpu_bench", "gpu_encrypt", "gpu_inject", "gpu_physics", "gpu_signal", "gpu_cluster_list"]:
             if not current_mod: 
                 asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "GPU Module Not Loaded"}), loop)
                 return
@@ -237,8 +249,58 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                     code = req.get("code", "")
                     res["message"] = "Live Injection Successful" if compile_master_code(code) else "Injection Failed"
 
-                if cmd != "gpu_exec" or req.get("kernel") != "render_3d":
-                    res["telemetry"] = get_telemetry()
+                elif cmd == "gpu_physics":
+                    ip = addr.split(":")[0]
+                    n = 256
+                    if ip not in PARTICLE_STATES:
+                        pos = (np.random.rand(n, 2).astype(np.float32) * 1.5 - 0.75)
+                        vel = (np.random.rand(n, 2).astype(np.float32) * 0.05 - 0.025)
+                        particles = np.zeros(n, dtype=[('pos', 'f4', 2), ('vel', 'f4', 2)])
+                        particles['pos'] = pos
+                        particles['vel'] = vel
+                        buf1 = drv.mem_alloc(particles.nbytes)
+                        buf2 = drv.mem_alloc(particles.nbytes)
+                        drv.memcpy_htod(buf1, particles)
+                        drv.memcpy_htod(buf2, particles)
+                        PARTICLE_STATES[ip] = {"in": buf1, "out": buf2, "frame": 0}
+                    
+                    state = PARTICLE_STATES[ip]
+                    p_in = state["in"] if state["frame"] % 2 == 0 else state["out"]
+                    p_out = state["out"] if state["frame"] % 2 == 0 else state["in"]
+                    state["frame"] += 1
+                    
+                    step_func = current_mod.get_function("nbody_step_kernel")
+                    step_func(p_in, p_out, np.int32(n), np.float32(0.01), np.float32(0.005), block=(256,1,1), grid=((n+255)//256, 1), stream=stream)
+                    
+                    render_func = current_mod.get_function("render_physics_kernel")
+                    w, h = 24, 24
+                    dest = np.zeros(w * h).astype(np.float32)
+                    render_func(drv.Out(dest), p_out, np.int32(n), np.int32(w), np.int32(h), block=(256,1,1), grid=((max(n, w*h)+255)//256, 1), stream=stream)
+                    stream.synchronize()
+                    
+                  
+                    dest_u8 = (np.clip(dest, 0, 1) * 255).astype(np.uint8)
+                    hex_data = dest_u8.tobytes().hex()
+                    res.update({"data": hex_data, "bin": False, "hex": True, "kernel": "render_3d", "width": w, "height": h})
+
+                elif cmd == "gpu_signal":
+                    data = req.get("data", [])
+                    n = len(data)
+                    real_in = np.array(data, dtype=np.float32)
+                    imag_in = np.zeros(n, dtype=np.float32)
+                    mag_out = np.zeros(n, dtype=np.float32)
+                    func = current_mod.get_function("dft_kernel")
+                    func(drv.In(real_in), drv.In(imag_in), drv.Out(mag_out), np.int32(n), block=(min(n, 256),1,1), grid=((n+255)//256, 1), stream=stream)
+                    stream.synchronize()
+                    res.update({"data": mag_out.tolist(), "kernel": "signal_fft"})
+
+                elif cmd == "gpu_cluster_list":
+                    nodes = []
+                    for node_ip, info in ACTIVE_CLIENTS.items():
+                        nodes.append({"ip": node_ip, "req": info["requests"], "uptime": int(time.time() - info["connected_at"])})
+                    res.update({"data": nodes, "kernel": "cluster_list"})
+
+                res["telemetry"] = get_telemetry()
                 res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
                 asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
             finally:
@@ -322,7 +384,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
             stop_requested = False
             first_chunk = True
             for new_text in streamer:
-                if stop_requested: break
+                if stop_requested or websocket.closed: break
                 
                 clean_text = new_text.replace("<|user|>", "").replace("<|assistant|>", "").replace("<|system|>", "").replace("</s>", "")
                 if first_chunk:
@@ -335,9 +397,9 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                 delta = {"status": "ok", "cmd": "ask_delta", "data": clean_text}
                 asyncio.run_coroutine_threadsafe(websocket_send_func(delta), loop)
             
-          
-            end_pkt = {"status": "ok", "cmd": "ask_end", "full_data": full_response, "telemetry": get_telemetry()}
-            asyncio.run_coroutine_threadsafe(websocket_send_func(end_pkt), loop)
+            if not websocket.closed:
+                end_pkt = {"status": "ok", "cmd": "ask_end", "full_data": full_response, "telemetry": get_telemetry()}
+                asyncio.run_coroutine_threadsafe(websocket_send_func(end_pkt), loop)
 
         elif cmd == "hf_token":
             token = req.get("token")
@@ -382,7 +444,13 @@ async def handle_unikernel(websocket):
                 await old_ws.close(1001, "New connection replacing old one")
         except: pass
     
-    ACTIVE_CLIENTS[ip] = websocket
+    ACTIVE_CLIENTS[ip] = {
+        "ws": websocket,
+        "addr": addr,
+        "connected_at": time.time(),
+        "last_seen": time.time(),
+        "requests": 0
+    }
     console.print(f"[{time.strftime('%H:%M:%S')}] Connected: [cyan]{addr}[/cyan]")
     
     async def send_to_ws(msg):
@@ -409,20 +477,27 @@ async def handle_unikernel(websocket):
         async for message in websocket:
             try:
                 if isinstance(message, bytes):
-                  
-                    arr = np.frombuffer(message, dtype=np.uint8)
-                    message = (arr ^ 0x5A).tobytes()
-                    req = msgpack.unpackb(message)
+                    data = bytearray(message)
+                    for i in range(len(data)): data[i] ^= 0x5A
+                    try:
+                        req = msgpack.unpackb(data)
+                    except Exception as ue:
+                        console.print(f"[bold red]Unpack Error:[/bold red] {ue} (Size: {len(data)} bytes)")
+                        return
                 else:
                     req = json.loads(message)
                 
                 cmd = req.get("cmd", "unknown")
+                if ip in ACTIVE_CLIENTS:
+                    ACTIVE_CLIENTS[ip]["last_seen"] = time.time()
+                    ACTIVE_CLIENTS[ip]["requests"] += 1
+                
                 kernel = req.get("kernel", "")
                 target = f" ({kernel})" if kernel else ""
                 console.print(f"[dim][{time.strftime('%H:%M:%S')}] Request: [bold green]{cmd}[/bold green]{target} from {addr}[/dim]")
 
                 loop = asyncio.get_running_loop()
-                await asyncio.to_thread(process_gpu_request, req, addr, send_to_ws, loop)
+                await asyncio.to_thread(process_gpu_request, req, addr, send_to_ws, loop, websocket)
             except Exception as e:
                 console.print(f"[red]Request Error:[/red] {e}")
     except (websockets.exceptions.ConnectionClosed, OSError) as e:
@@ -443,16 +518,70 @@ def get_primary_ip():
         return ip
     except: return "127.0.0.1"
 
+async def dashboard_handler(request):
+    html = """
+    <html><head><title>UniKernel Cluster Dashboard</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0b0f19; color: #e0e6ed; padding: 20px; }
+        .card { background: #1a1f2e; border-radius: 12px; padding: 20px; margin-bottom: 20px; border-left: 5px solid #00f2ff; }
+        h1 { color: #00f2ff; text-shadow: 0 0 10px rgba(0,242,255,0.3); }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #2d3748; }
+        .status { color: #00ff88; font-weight: bold; }
+        .gpu-telemetry { display: flex; gap: 20px; margin-top: 20px; }
+        .stat-box { background: #2d3748; padding: 15px; border-radius: 8px; flex: 1; text-align: center; }
+        .stat-val { font-size: 1.5rem; font-weight: bold; color: #7000ff; }
+    </style>
+    <meta http-equiv="refresh" content="2">
+    </head><body>
+    <h1>🕸️ UniKernel Cluster Dashboard</h1>
+    <div class="card">
+        <h3>Connected Nodes</h3>
+        <table>
+            <tr><th>IP Address</th><th>Connected At</th><th>Last Seen</th><th>Total Requests</th><th>Status</th></tr>
+    """
+    for ip, info in ACTIVE_CLIENTS.items():
+        conn_str = time.strftime('%H:%M:%S', time.localtime(info['connected_at']))
+        seen_str = time.strftime('%H:%M:%S', time.localtime(info['last_seen']))
+        html += f"<tr><td>{ip}</td><td>{conn_str}</td><td>{seen_str}</td><td>{info['requests']}</td><td class='status'>ONLINE</td></tr>"
+    
+    tel = get_telemetry()
+    html += f"""
+        </table>
+    </div>
+    <div class="card">
+        <h3>GPU Telemetry</h3>
+        <div class="gpu-telemetry">
+            <div class="stat-box"><div>Temperature</div><div class="stat-val">{tel.get('temp', 0)}°C</div></div>
+            <div class="stat-box"><div>Utilization</div><div class="stat-val">{tel.get('util', 0)}%</div></div>
+            <div class="stat-box"><div>VRAM Used</div><div class="stat-val">{tel.get('mem', 0)} MB</div></div>
+            <div class="stat-box"><div>Power</div><div class="stat-val">{tel.get('pwr', 0)}W</div></div>
+        </div>
+    </div>
+    </body></html>
+    """
+    return web.Response(text=html, content_type='text/html')
+
 async def server_main():
     hostname = socket.gethostname()
     local_ip = get_primary_ip()
     port = 81
+    
+    app = web.Application()
+    app.router.add_get('/', dashboard_handler)
+    
+ 
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080) 
+    await site.start()
+
     info = ServiceInfo("_uniaccel._tcp.local.", f"{hostname}._uniaccel._tcp.local.", 
                        addresses=[socket.inet_aton(local_ip)], port=port, properties={"v": "1.1"}, server=f"{hostname}.local.")
     aiozc = AsyncZeroconf()
     await aiozc.async_register_service(info)
     try:
-        console.print(Panel(f"[bold green]UniKernel GPU Acceleration Host Online[/bold green]\nIP: {local_ip} | Port: {port}\nService: {hostname}.local", expand=False))
+        console.print(Panel(f"[bold green]UniKernel GPU Acceleration Host Online[/bold green]\nIP: {local_ip} | WS Port: {port} | Dashboard: http://{local_ip}:8080\nService: {hostname}.local", expand=False))
         async with websockets.serve(handle_unikernel, "0.0.0.0", port, reuse_address=True, ping_interval=30, ping_timeout=10, compression=None):
             while True: await asyncio.sleep(1)
     finally:

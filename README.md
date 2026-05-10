@@ -186,6 +186,9 @@ UniAccel is a distributed computing engine that offloads heavy mathematical and 
 | `accel research` | `accel research rsa` | RSA-2048 high-speed modular exponentiation. |
 | `accel encrypt` | `accel encrypt [text] [key]` | Offload complex XOR/Rotate/Shift encryption to GPU. |
 | `accel bench` | `accel bench` | Run a **5-stage GPU Performance Analysis**. |
+| `accel physics` | `accel physics` | Start **N-Body Gravity Simulation** (ASCII Visual). |
+| `accel signal` | `accel signal` | GPU-Accelerated **FFT Signal Analysis**. |
+| `accel cluster` | `accel cluster` | View all **Connected Cluster Nodes** metadata. |
 | `accel status` | `accel status` | View connection state and real-time **GPU Telemetry**. |
 | `accel disconnect`| `accel disconnect` | Close the link to the accelerator host. |
 
@@ -195,6 +198,8 @@ The UniAccel engine leverages CUDA kernels for extreme throughput:
 - **`matrix_mul`**: Shared-memory optimized Tiled Matrix Multiplication.
 - **`hash_crack`**: Brute-force search for target hash values.
 - **`rsa_2048`**: RSA-2048 private key operation accelerated via CUDA.
+- **`nbody_physics`**: Parallel N-Body gravity simulation for multiple particles.
+- **`signal_fft`**: Fast Fourier Transform for real-time sensor data analysis.
 
 ### 7.3 AI-Accelerated Chat (`chat` / `accel chat`)
 UniKernel now features a dedicated AI Shell powered by TinyLlama on the GPU Host.
@@ -213,7 +218,12 @@ The built-in benchmark measures:
 4.  **Atomic Operations**: Throughput of synchronized global memory writes.
 5.  **Launch Latency**: Driver overhead for triggering kernel execution.
 
-### 7.4 Security & Transport
+### 7.5 Web Cluster Dashboard
+UniAccelHost now includes a high-performance web dashboard for cluster monitoring.
+- **Access:** `http://[GPU_HOST_IP]:8080`
+- **Features:** Real-time node tracking, request statistics, and comprehensive GPU telemetry (Temp/Load/VRAM).
+
+### 7.6 Security & Transport
 - **mDNS Discovery**: Automatically finds `_uniaccel._tcp.local` services.
 - **MessagePack Serialization**: Compact binary data exchange.
 - **XOR Obfuscation**: All packets are obfuscated with a dynamic XOR key to prevent sniffing.

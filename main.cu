@@ -10,12 +10,4 @@
 #include "signal_kernels.cu"
 #include "bench_kernels.cu"
 #include "rsa_kernels.cu"
-
-
-
-
-
-
-
-
-
+#include "physics_kernels.cu"
