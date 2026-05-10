@@ -161,6 +161,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                 asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "GPU Module Not Loaded"}), loop)
                 return
             cuda_ctx.push()
+            stream = drv.Stream()
             try:
                 res = {"status": "ok", "cmd": cmd}
                 if cmd == "gpu_exec":
@@ -171,13 +172,15 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                     if kernel_name == "render_3d":
                         w, h = 24, 24
                         dest = np.zeros(w * h).astype(np.float32)
-                        func(drv.Out(dest), np.int32(w), np.int32(h), np.float32(time.time()), block=(16,16,1), grid=((w+15)//16, (h+15)//16))
+                        func(drv.Out(dest), np.int32(w), np.int32(h), np.float32(time.time()), block=(16,16,1), grid=((w+15)//16, (h+15)//16), stream=stream)
+                        stream.synchronize()
                         res.update({"data": dest.tobytes(), "bin": True, "kernel": "render_3d", "width": w, "height": h})
                         
                     elif kernel_name == "hash_crack":
                         target, s, r = int(np.uint32(data[0])), int(np.int32(data[1])), int(np.int32(data[2]))
                         result = np.array([-1]).astype(np.int32)
-                        func(drv.InOut(result), np.uint32(target), np.int32(s), np.int32(r), block=(256,1,1), grid=((r+255)//256, 1))
+                        func(drv.InOut(result), np.uint32(target), np.int32(s), np.int32(r), block=(256,1,1), grid=((r+255)//256, 1), stream=stream)
+                        stream.synchronize()
                         res.update({"data": int(result[0]), "kernel": "hash_crack"})
                     
                     elif kernel_name == "rsa_2048":
@@ -187,7 +190,8 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                         n_inv = np.uint32(data[3])
                         count = len(msg) // 64
                         result = np.zeros_like(msg)
-                        func(drv.In(msg), drv.In(exp), drv.In(mod), drv.Out(result), n_inv, np.int32(count), block=(256,1,1), grid=((count*32 + 255)//256, 1))
+                        func(drv.In(msg), drv.In(exp), drv.In(mod), drv.Out(result), n_inv, np.int32(count), block=(256,1,1), grid=((count*32 + 255)//256, 1), stream=stream)
+                        stream.synchronize()
                         res.update({"data": result.tobytes(), "bin": True, "kernel": "rsa_2048"})
 
                 elif cmd == "gpu_bench":
@@ -225,7 +229,8 @@ def process_gpu_request(req, addr, websocket_send_func, loop):
                     key = req.get("key", 0x5A)
                     data_bytes = np.frombuffer(text.encode(), dtype=np.uint8).copy()
                     func = current_mod.get_function("encrypt_kernel")
-                    func(drv.InOut(data_bytes), np.int32(len(data_bytes)), np.uint8(key), block=(256,1,1), grid=((len(data_bytes)+255)//256, 1))
+                    func(drv.InOut(data_bytes), np.int32(len(data_bytes)), np.uint8(key), block=(256,1,1), grid=((len(data_bytes)+255)//256, 1), stream=stream)
+                    stream.synchronize()
                     res["data"] = data_bytes.tolist()
 
                 elif cmd == "gpu_inject":
