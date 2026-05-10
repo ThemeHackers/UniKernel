@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+import os
+import torch
 
-# Core packages that need full collection
+
+torch_lib_path = os.path.join(os.path.dirname(torch.__file__), 'lib')
+
+
 packages = ['rich', 'websockets', 'zeroconf', 'msgpack', 'pynvml', 'accelerate']
 datas = [('main.cu', '.'), ('include', 'include'), ('src', 'src')]
 binaries = []
-hiddenimports = []
+hiddenimports = ['torch.cuda', 'torch.backends.cuda']
 
 for pkg in packages:
     tmp_ret = collect_all(pkg)
@@ -13,13 +18,19 @@ for pkg in packages:
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
 
-# Targeted collection for heavy weights to avoid redundant analysis
+
 datas += collect_data_files('torch')
 datas += collect_data_files('transformers')
 hiddenimports += collect_submodules('torch')
 hiddenimports += collect_submodules('transformers')
 
-# Aggressive exclusion of unused heavy dependencies
+
+if os.path.exists(torch_lib_path):
+    for f in os.listdir(torch_lib_path):
+        if f.endswith('.dll'):
+            binaries.append((os.path.join(torch_lib_path, f), 'torch/lib'))
+
+
 excluded_modules = [
     'tensorflow', 'tensorboard', 'keras', 'matplotlib', 'pandas', 'scipy', 
     'sklearn', 'grpc', 'boto3', 'botocore', 'IPython', 'PIL', 'cv2',
@@ -50,7 +61,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=False, # UPX is very slow for large ML binaries
+    upx=False,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
