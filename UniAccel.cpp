@@ -42,16 +42,19 @@ void loopUniAccel() {
 }
 
 void discoverAccelHost() {
-    kprintln(F("[UniAccel] Scanning network for GPU Host..."));
+    kprintln(F("Scanning network for GPU Host..."));
+
     int n = MDNS.queryService("uniaccel", "tcp");
     if (n == 0) {
-        kprintln(F("[UniAccel] No host found. Make sure UniAccelHost.py is running."));
+        kprintln(F("No host found. Make sure UniAccelHost.py is running."));
     } else {
-        kprint(F("[UniAccel] Found host: ")); kprintln(MDNS.hostname(0).c_str());
+        kprint(F("Found host: ")); kprintln(MDNS.hostname(0).c_str());
+
         strncpy(accelHost, MDNS.IP(0).toString().c_str(), 15);
         accelPort = MDNS.port(0);
-        kprint(F("[UniAccel] Target set to: ")); kprint(accelHost); kprint(F(":")); kprintln(accelPort);
+        kprint(F("Target set to: ")); kprint(accelHost); kprint(F(":")); kprintln(accelPort);
     }
+
 }
 
 void handleAccelCommand(char* args) {
@@ -74,13 +77,15 @@ void handleAccelCommand(char* args) {
         }
         if (accelHost[0] == '\0' || strcmp(accelHost, "0.0.0.0") == 0) {
             kprintColor(CLR_RED);
-            kprintln(F("[UniAccel] Error: No host IP set. Try 'accel discover' first."));
+            kprintln(F("Error: No host IP set. Try 'accel discover' first."));
             kprintColor(CLR_RST);
             return;
         }
+
         
-        kprintColor(CLR_CYN); kprint(F("[UniAccel] ")); kprintColor(CLR_RST);
-        kprint(F("Connecting to ")); kprintColor(CLR_BLU); kprint(accelHost); kprintColor(CLR_RST);
+        kprintColor(CLR_CYN); kprint(F("Connecting... ")); kprintColor(CLR_RST);
+        kprint(F("to ")); kprintColor(CLR_BLU); kprint(accelHost); kprintColor(CLR_RST);
+
         kprint(F(":")); kprintln(accelPort);
         webSocket.begin(accelHost, accelPort, "/");
         webSocket.onEvent(webSocketEvent);
@@ -91,8 +96,9 @@ void handleAccelCommand(char* args) {
         accelStopRequested = true;
         webSocket.disconnect();
         accelConnected = false;
-        kprintln(F("[UniAccel] Disconnected manually."));
+        kprintln(F("Disconnected manually."));
     } else if (strcmp_P(sub, PSTR("inject")) == 0) {
+
         if (!accelConnected) { kprintln(F("Not connected.")); return; }
         char filename[16];
         sscanf(subArgs, "%15s", filename);
@@ -112,7 +118,8 @@ void handleAccelCommand(char* args) {
         size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
         for(size_t i=0; i<len; i++) buffer[i] ^= XOR_KEY;
         webSocket.sendBIN(buffer, len);
-        kprintln(F("[UniAccel] Injecting CUDA code to Host..."));
+        kprintln(F("Injecting CUDA code to Host..."));
+
 
     } else if (strcmp_P(sub, PSTR("encrypt")) == 0) {
         if (!accelConnected) { kprintln(F("Not connected.")); return; }
@@ -134,15 +141,17 @@ void handleAccelCommand(char* args) {
         accelStartTime = millis();
         webSocket.sendBIN(msgBuffer, msgLen);
         kprintColor(CLR_CYN);
-        kprintln(F("[UniAccel] Requesting GPU-Parallel XOR Encryption..."));
+        kprintln(F("Requesting GPU-Parallel XOR Encryption..."));
         kprintColor(CLR_RST);
+
     } else if (strcmp_P(sub, PSTR("research")) == 0) {
         if (!accelConnected) { 
             kprintColor(CLR_RED);
-            kprintln(F("[UniAccel] Error: Not connected.")); 
+            kprintln(F("Error: Not connected.")); 
             kprintColor(CLR_RST);
             return; 
         }
+
         if (!subArgs || strlen(subArgs) == 0) {
             kprintln(F("Usage: accel research crack [target_hash] [start] [range]"));
             return;
@@ -173,7 +182,8 @@ void handleAccelCommand(char* args) {
             
             accelStartTime = millis();
             webSocket.sendBIN(buf, len);
-            kprintln(F("[UniAccel] Security Research: Hash crack offloaded to GPU..."));
+            kprintln(F("Security Research: Hash crack offloaded to GPU..."));
+
         } else if (strcmp(rType, "prime") == 0) {
             int s, r;
             if (sscanf(subArgs + 6, "%d %d", &s, &r) < 2) {
@@ -192,7 +202,8 @@ void handleAccelCommand(char* args) {
             
             accelStartTime = millis();
             webSocket.sendBIN(buf, len);
-            kprintln(F("[UniAccel] Security Research: Prime search started..."));
+            kprintln(F("Security Research: Prime search started..."));
+
         } else if (strcmp(rType, "match") == 0) {
             char blob[32], pat[16];
             if (sscanf(subArgs + 6, "%31s %15s", blob, pat) < 2) {
@@ -214,15 +225,17 @@ void handleAccelCommand(char* args) {
             
             accelStartTime = millis();
             webSocket.sendBIN(buf, len);
-            kprintln(F("[UniAccel] Security Research: Pattern match offloaded..."));
+            kprintln(F("Security Research: Pattern match offloaded..."));
+
         } else {
             kprintln(F("Usage: accel research [crack/prime/match]"));
         }
     } else if (strcmp_P(sub, PSTR("bench")) == 0) {
         if (!accelConnected) { kprintln(F("Not connected.")); return; }
         kprintColor(CLR_MAG);
-        kprintln(F("UniAccel GPU Benchmark"));
+        kprintln(F("GPU Benchmark"));
         kprintColor(CLR_RST);
+
         kprintln(F("Performing Memory & Compute Stress Analysis..."));
         
         JsonDocument doc;
@@ -239,8 +252,9 @@ void handleAccelCommand(char* args) {
         discoverAccelHost();
     } else if (strcmp_P(sub, PSTR("status")) == 0) {
         kprintColor(CLR_CYN);
-        kprintln(F("╭── UniAccel System Status ──╮"));
+        kprintln(F("╭── Accelerator System Status ──╮"));
         kprintColor(CLR_RST);
+
         kprint(F("│ Status: ")); 
         if (accelConnected) {
             kprintColor(CLR_GRN); kprint(F("CONNECTED")); kprintColor(CLR_RST);
@@ -254,12 +268,58 @@ void handleAccelCommand(char* args) {
         kprintColor(CLR_CYN);
         kprintln(F("╰────────────────────────────╯"));
         kprintColor(CLR_RST);
+    } else if (strcmp_P(sub, PSTR("list")) == 0) {
+        if (!accelConnected) { kprintln(F("Not connected.")); return; }
+        JsonDocument doc;
+        doc["cmd"] = "gpu_list";
+        uint8_t buffer[64];
+        size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+        for(size_t i=0; i<len; i++) buffer[i] ^= XOR_KEY;
+        webSocket.sendBIN(buffer, len);
+        kprintln(F("Requesting model presets..."));
+    } else if (strcmp_P(sub, PSTR("unload")) == 0) {
+
+        if (!accelConnected) { kprintln(F("Not connected.")); return; }
+        JsonDocument doc;
+        doc["cmd"] = "gpu_unload";
+        uint8_t buffer[64];
+        size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+        for(size_t i=0; i<len; i++) buffer[i] ^= XOR_KEY;
+        webSocket.sendBIN(buffer, len);
+        kprintln(F("Sending unload request..."));
+    } else if (strcmp_P(sub, PSTR("load")) == 0) {
+
+        if (!accelConnected) { kprintln(F("Not connected.")); return; }
+        if (!subArgs) { kprintln(F("Usage: accel load [model_id/preset]")); return; }
+        JsonDocument doc;
+        doc["cmd"] = "load_hf";
+        doc["model_id"] = subArgs;
+        uint8_t buffer[256];
+        size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+        for(size_t i=0; i<len; i++) buffer[i] ^= XOR_KEY;
+        webSocket.sendBIN(buffer, len);
+        kprint(F("Loading model: ")); kprintln(subArgs);
+    } else if (strcmp_P(sub, PSTR("ask")) == 0) {
+
+        if (!accelConnected) { kprintln(F("Not connected.")); return; }
+        if (!subArgs) { kprintln(F("Usage: accel ask [prompt]")); return; }
+        JsonDocument doc;
+        doc["cmd"] = "ask";
+        doc["prompt"] = subArgs;
+        uint8_t buffer[512];
+        size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+        for(size_t i=0; i<len; i++) buffer[i] ^= XOR_KEY;
+        webSocket.sendBIN(buffer, len);
+        kprintln(F("Thinking..."));
     } else {
+
         kprintColor(CLR_CYN);
-        kprint(F("[UniAccel] "));
+        kprint(F(""));
         kprintColor(CLR_RST);
-        kprintln(F("Usage: accel [connect/discover/research/bench/inject/encrypt/status/disconnect]"));
+        kprintln(F("Usage: accel [connect/load/ask/list/unload/discover/research/bench/status/disconnect]"));
     }
+
+
 }
 
 void onGpuResponse(uint8_t * payload, size_t length) {
@@ -271,7 +331,7 @@ void onGpuResponse(uint8_t * payload, size_t length) {
         error = deserializeJson(res, payload);
         if (error) {
             kprintColor(CLR_RED);
-            kprintln(F("[UniAccel] Error: Invalid response format"));
+            kprintln(F("Error: Invalid response format"));
             kprintColor(CLR_RST);
             return;
         }
@@ -303,8 +363,9 @@ void onGpuResponse(uint8_t * payload, size_t length) {
                 }
             kprintln(F("-------------------------------"));
             } else {
-                kprint(F("[UniAccel] High-Res Render Complete ("));
+                kprint(F("High-Res Render Complete ("));
                 if (w > 0) {
+
                     kprint(w); kprint(F("x")); kprint(h);
                 } else {
                     kprint(F("Unknown Res"));
@@ -314,7 +375,8 @@ void onGpuResponse(uint8_t * payload, size_t length) {
         } else if (res.containsKey("cmd") && strcmp(res["cmd"], "gpu_bench") == 0) {
             JsonObject data = res["data"];
             kprintColor(CLR_GRN);
-            kprintln(F("\n[Benchmark Results]"));
+            kprintln(F("\nBenchmark Results"));
+
             kprintColor(CLR_RST);
             kprint(F(" - Memory Bandwidth: ")); kprintColor(CLR_YLW); kprint(data["bandwidth_gbs"].as<float>()); kprintln(F(" GB/s")); kprintColor(CLR_RST);
             kprint(F(" - Compute Throughput: ")); kprintColor(CLR_YLW); kprint(data["compute_gflops"].as<float>()); kprintln(F(" GFLOPS")); kprintColor(CLR_RST);
@@ -325,35 +387,44 @@ void onGpuResponse(uint8_t * payload, size_t length) {
         } else if ((res.containsKey("cmd") && strcmp(res["cmd"], "gpu_encrypt") == 0) || 
                    (res.containsKey("kernel") && strcmp(res["kernel"], "encrypt") == 0)) {
             JsonArray data = res["data"];
-            kprint(F("[UniAccel] GPU Cipher: "));
+            kprint(F("GPU Cipher: "));
             for (size_t i = 0; i < data.size(); i++) {
                 int v = data[i];
                 if (v < 16) kprint(F("0"));
                 kprint(v, HEX);
             }
             kprintln();
-            kprint(F("[UniAccel] Latency: ")); kprint(res["compute_ms"].as<float>()); kprintln(F("ms"));
+            kprint(F("Latency: ")); kprint(res["compute_ms"].as<float>()); kprintln(F("ms"));
+
         } else {
-            kprint(F("[UniAccel] Result: "));
-            String output;
-            if (res["data"].is<JsonArray>() || res["data"].is<JsonObject>()) {
-                serializeJson(res["data"], output);
-            } else {
-                output = res["data"].as<String>();
+            if (res.containsKey("message")) {
+                kprintln(res["message"].as<const char*>());
             }
-            kprintln(output.c_str());
+            if (res.containsKey("data")) {
+                String output;
+
+                if (res["data"].is<JsonArray>() || res["data"].is<JsonObject>()) {
+                    serializeJson(res["data"], output);
+                } else {
+                    output = res["data"].as<String>();
+                }
+                kprintln(output.c_str());
+            }
+
         }
         if (res.containsKey("compute_ms")) {
             unsigned long rtt = millis() - accelStartTime;
-            kprint(F("[Stats] Compute: ")); kprint(res["compute_ms"].as<float>());
+            kprint(F("Compute: ")); kprint(res["compute_ms"].as<float>());
             kprint(F("ms | RTT: ")); kprint(rtt); kprintln(F("ms"));
         }
+
     } else {
         kprintColor(CLR_RED);
-        kprint(F("[UniAccel] GPU Error: "));
+        kprint(F("GPU Error: "));
         kprintln(res["message"].as<const char*>());
         kprintColor(CLR_RST);
     }
+
 }
 
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
@@ -363,33 +434,36 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
             accelConnected = false;
             accelRetryCount++;
             {
-              String m = "[UniAccel] Disconnected from GPU Host (" + String(accelRetryCount) + "/3)";
+              String m = "Disconnected from GPU Host (" + String(accelRetryCount) + "/3)";
               kprintlnLog(m);
             }
             if (accelRetryCount >= 3) {
                 accelStopRequested = true;
                 webSocket.setReconnectInterval(0);
                 webSocket.disconnect();
-                kprintlnLog(F("[UniAccel] Connection failed 3 times. Stopping auto-reconnect."));
+                kprintlnLog(F("Connection failed 3 times. Stopping auto-reconnect."));
             }
+
             break;
         case WStype_CONNECTED:
             accelConnected = true;
             accelRetryCount = 0; 
             addDmesg(F("UniAccel: Connected"));
             kprint(F("\n")); kprintColor(CLR_GRN);
-            kprintln(F("[UniAccel] Connected to GPU Host Successfully"));
+            kprintln(F("Connected to GPU Host Successfully"));
             kprintColor(CLR_RST);
             break;
+
         case WStype_TEXT:
         case WStype_BIN:
             onGpuResponse(payload, length);
             break;
         case WStype_ERROR:
-            kprintln(F("\n[UniAccel] WebSocket Error"));
+            kprintln(F("\nWebSocket Error"));
             break;
     }
 }
+
 
 void accelExec(const char* kernel, JsonArray data) {
     if (!accelConnected) return;

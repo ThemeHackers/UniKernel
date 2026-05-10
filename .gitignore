@@ -15,5 +15,5 @@
 .vscode
 dist/
 build/
-UniAccelHost.py
+.venv/
 UniAccelHost.spec

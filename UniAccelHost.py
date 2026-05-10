@@ -15,6 +15,9 @@ import subprocess
 import logging
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 from zeroconf.asyncio import AsyncZeroconf
+import torch
+from transformers import pipeline
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -68,6 +71,8 @@ except ImportError:
 current_mod = None
 cuda_ctx = None
 nv_handle = None
+current_hf_model = None
+
 
 def compile_master_code(code_content=None):
     global current_mod, cuda_ctx
@@ -186,6 +191,74 @@ def process_gpu_request(req, addr):
                 res["status"] = "error"
                 res["message"] = "Injection Compile Failed"
 
+        elif cmd == "load_hf":
+            model_id = req.get("model_id")
+            # Short-name resolution
+            presets = {
+                "tiny": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                "phi": "microsoft/phi-2",
+                "gpt2": "gpt2",
+                "stable": "stabilityai/stable-code-3b"
+            }
+            if model_id in presets:
+                model_id = presets[model_id]
+                
+            console.print(f"[bold yellow][HF][/bold yellow] Loading model: [cyan]{model_id}[/cyan]...")
+
+            try:
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                global current_hf_model
+                current_hf_model = pipeline(
+                    "text-generation",
+                    model=model_id,
+                    device=device,
+                    torch_dtype=torch.float16 if device == "cuda:0" else torch.float32
+                )
+                res["message"] = f"Model {model_id} loaded on {device}."
+                res["status"] = "ok"
+            except Exception as e:
+                res["status"] = "error"
+                res["message"] = f"HF Load Error: {str(e)}"
+
+        elif cmd == "ask":
+            prompt = req.get("prompt")
+            if current_hf_model is None:
+                res["status"] = "error"
+                res["message"] = "No HF model loaded. Use 'accel load [model]'"
+            else:
+                console.print(f"[bold yellow][HF][/bold yellow] Processing prompt: [dim]{prompt}[/dim]")
+                result = current_hf_model(prompt, max_new_tokens=100, do_sample=True, temperature=0.7)
+                answer = result[0]['generated_text']
+                if answer.startswith(prompt):
+                    answer = answer[len(prompt):].strip()
+                res["data"] = answer
+                res["status"] = "ok"
+
+        elif cmd == "gpu_unload":
+            global current_hf_model
+            if current_hf_model:
+                del current_hf_model
+                current_hf_model = None
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                res["message"] = "Model unloaded and VRAM cleared."
+            else:
+                res["message"] = "No model to unload."
+            res["status"] = "ok"
+
+        elif cmd == "gpu_list":
+            res["data"] = {
+                "tiny": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                "phi": "microsoft/phi-2",
+                "gpt2": "gpt2",
+                "stable": "stabilityai/stable-code-3b"
+            }
+            res["status"] = "ok"
+
+
+
         res["telemetry"] = get_telemetry()
         res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
         return res
@@ -200,9 +273,14 @@ async def handle_unikernel(websocket):
     try:
         async for message in websocket:
             try:
-                if isinstance(message, bytes): message = bytes([b ^ 0x5A for b in message])
-                req = msgpack.unpackb(message)
+                if isinstance(message, bytes):
+                    message = bytes([b ^ 0x5A for b in message])
+                    req = msgpack.unpackb(message)
+                else:
+                    req = json.loads(message)
+                
                 res = await asyncio.to_thread(process_gpu_request, req, addr)
+
                 resp_bytes = msgpack.packb(res)
                 await websocket.send(bytes([b ^ 0x5A for b in resp_bytes]))
             except Exception as e:
