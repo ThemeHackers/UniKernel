@@ -5,7 +5,7 @@
 *.elf
 *.hex
 *.bin
-!UniKernel.bin
+!Unikernel.bin
 .vscode/
 .idea/
 *.swp

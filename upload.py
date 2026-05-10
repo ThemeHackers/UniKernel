@@ -18,7 +18,7 @@ def run_command(cmd, desc):
 def run_upload(port_num):
     arduino_cli = ".\\arduino-cli.exe"
     fqbn = "esp8266:esp8266:nodemcuv2"
-    sketch = "UniKernel.ino"
+    sketch = "Unikernel.ino"
     com_port = f"COM{port_num}"
     
     cmd = [
@@ -46,7 +46,7 @@ def main():
 
     arduino_cli = ".\\arduino-cli.exe"
     fqbn = "esp8266:esp8266:nodemcuv2"
-    sketch = "UniKernel.ino"
+    sketch = "Unikernel.ino"
 
     if not os.path.exists(arduino_cli):
         print("Error: arduino-cli.exe not found.")
