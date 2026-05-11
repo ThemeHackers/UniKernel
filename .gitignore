@@ -18,4 +18,5 @@ build/
 .venv/
 UniAccelHost.spec
 UniAccelHost/
+Unikernel.ino.bak
 Unikernel.bin

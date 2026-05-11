@@ -117,7 +117,7 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 *   **Brute-Force Protection:** Exponential backoff (Cooldown) triggered after failed logins. 5 consecutive fails trigger a **300s system lockout**.
 *   **Encrypted Shell (SSH):** Advanced encryption using **Elliptic Curve P-256 (secp256r1)** for fast and secure remote management.
 *   **Hardened Firewall:** Whitelist your IP using `firewall allow [IP]`. This protects Serial, Telnet, SSH, and the **Web API/Dashboard**.
-*   **OTA Security:** Firmware updates are protected by **MD5 Hashed** credentials. Default: `admin`.
+*   **OTA Security:** Firmware updates are disabled by default. A **SHA-256 Hashed** password must be configured in EEPROM before OTA can be enabled.
 *   **Session Security:** Automatic logout occurs after 5 minutes of inactivity.
 
 ## 3. Technical Specifications

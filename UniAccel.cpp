@@ -50,7 +50,9 @@ uint8_t hex2int(char c) {
   return 0;
 }
 
-void initUniAccel() {}
+void initUniAccel() {
+  addDmesg(F("UniAccel: Module V2.1.0-A Loaded"));
+}
 
 void redrawPrompt(); 
 
@@ -732,6 +734,12 @@ void onGpuResponse(uint8_t *payload, size_t length) {
             kprint(F(" | Uptime: ")); kprint(node["uptime"].as<int>());
             kprintln(F("s"));
         }
+        if (res.containsKey("dashboard")) {
+            kprint(F("Dashboard: "));
+            kprintColor(CLR_YLW);
+            kprintln(res["dashboard"].as<const char*>());
+            kprintColor(CLR_RST);
+        }
         kprintColor(CLR_CYN);
         kprintln(F("-------------------------------"));
         kprintColor(CLR_RST);
@@ -817,15 +825,20 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     accelConnected = false;
     accelRetryCount++;
     {
-      String m = "Disconnected from GPU Host (" + String(accelRetryCount) + "/3)";
-      kprintlnLog(m);
+      kprintColor(CLR_RED);
+      kprint(F("[System] GPU Link Lost. Re-syncing ("));
+      kprint(accelRetryCount);
+      kprintln(F("/3)..."));
+      kprintColor(CLR_RST);
       accelChatMode = false;
     }
     if (accelRetryCount >= 3) {
       accelStopRequested = true;
       webSocket.setReconnectInterval(0);
       webSocket.disconnect();
-      kprintlnLog(F("Connection failed 3 times. Stopping auto-reconnect."));
+      kprintColor(CLR_RED);
+      kprintln(F("[CRITICAL] GPU Acceleration Offline. Link failed after 3 attempts."));
+      kprintColor(CLR_RST);
     }
 
     break;

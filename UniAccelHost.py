@@ -20,9 +20,8 @@ from zeroconf import IPVersion, ServiceInfo, Zeroconf
 from zeroconf.asyncio import AsyncZeroconf
 
 
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
+warnings.filterwarnings("ignore", message=".*coroutine '.*' was never awaited.*")
 
 from pynvml import *
 from rich.console import Console
@@ -40,7 +39,7 @@ def setup_environment():
                 vs_path = subprocess.check_output([vswhere_path, "-latest", "-products", "*", "-property", "installationPath"], encoding='utf-8').strip()
                 if vs_path:
                     vcvars_paths.append(os.path.join(vs_path, "VC\\Auxiliary\\Build\\vcvars64.bat"))
-            except: pass
+            except Exception: pass
         vcvars_paths.extend([
             "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
             "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Auxiliary\\Build\\vcvars64.bat",
@@ -57,7 +56,8 @@ def setup_environment():
                             if key.upper() in ["PATH", "INCLUDE", "LIB", "LIBPATH"]:
                                 os.environ[key] = value
                     break
-                except: pass
+                except Exception as e:
+                    console.print(f"[dim red]MSVC activation failed: {e}[/dim red]")
 
 setup_environment()
 
@@ -154,10 +154,15 @@ def get_telemetry():
         }
         LAST_TELEMETRY_TIME = now
         return LAST_TELEMETRY
-    except: return {}
+    except Exception as e:
+        console.print(f"[dim red]Telemetry Error: {e}[/dim red]")
+        return {}
+
 
 from transformers import TextIteratorStreamer
 from threading import Thread
+
+ALLOW_GPU_INJECT = False
 
 def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
     global current_hf_model, stop_requested
@@ -167,8 +172,23 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
         start_time = time.time()
         cmd = req.get("cmd")
         
+        allowed_cmds = ["gpu_exec", "gpu_bench", "gpu_encrypt", "gpu_physics", "gpu_signal", "gpu_cluster_list"]
+        if ALLOW_GPU_INJECT:
+            allowed_cmds.append("gpu_inject")
 
-        if cmd in ["gpu_exec", "gpu_bench", "gpu_encrypt", "gpu_inject", "gpu_physics", "gpu_signal", "gpu_cluster_list"]:
+        if cmd == "gpu_cluster_list":
+            nodes = []
+            with CLIENTS_LOCK:
+                for node_ip, info in ACTIVE_CLIENTS.items():
+                    nodes.append({"ip": node_ip, "req": info["requests"], "uptime": int(time.time() - info["connected_at"])})
+            dashboard_url = f"http://{get_primary_ip()}:8080"
+            res = {"status": "ok", "cmd": "gpu_cluster_list", "data": nodes, "kernel": "cluster_list", "dashboard": dashboard_url}
+            res["telemetry"] = get_telemetry()
+            res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
+            asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
+            return
+
+        if cmd in allowed_cmds:
             if not current_mod: 
                 asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "GPU Module Not Loaded"}), loop)
                 return
@@ -294,11 +314,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                     stream.synchronize()
                     res.update({"data": mag_out.tolist(), "kernel": "signal_fft"})
 
-                elif cmd == "gpu_cluster_list":
-                    nodes = []
-                    for node_ip, info in ACTIVE_CLIENTS.items():
-                        nodes.append({"ip": node_ip, "req": info["requests"], "uptime": int(time.time() - info["connected_at"])})
-                    res.update({"data": nodes, "kernel": "cluster_list"})
+
 
                 res["telemetry"] = get_telemetry()
                 res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
@@ -384,7 +400,13 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
             stop_requested = False
             first_chunk = True
             for new_text in streamer:
-                if stop_requested or websocket.closed: break
+                is_ws_closed = getattr(websocket, 'closed', False)
+                try:
+                    if not is_ws_closed and hasattr(websocket, 'state'):
+                        is_ws_closed = str(websocket.state).split('.')[-1] == 'CLOSED'
+                except Exception: pass
+
+                if stop_requested or is_ws_closed: break
                 
                 clean_text = new_text.replace("<|user|>", "").replace("<|assistant|>", "").replace("<|system|>", "").replace("</s>", "")
                 if first_chunk:
@@ -397,7 +419,13 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 delta = {"status": "ok", "cmd": "ask_delta", "data": clean_text}
                 asyncio.run_coroutine_threadsafe(websocket_send_func(delta), loop)
             
-            if not websocket.closed:
+            is_ws_closed = getattr(websocket, 'closed', False)
+            try:
+                if not is_ws_closed and hasattr(websocket, 'state'):
+                    is_ws_closed = str(websocket.state).split('.')[-1] == 'CLOSED'
+            except Exception: pass
+
+            if not is_ws_closed:
                 end_pkt = {"status": "ok", "cmd": "ask_end", "full_data": full_response, "telemetry": get_telemetry()}
                 asyncio.run_coroutine_threadsafe(websocket_send_func(end_pkt), loop)
 
@@ -431,26 +459,44 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
         asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": msg}), loop)
 
 ACTIVE_CLIENTS = {}
+CLIENTS_LOCK = threading.Lock()
 
 async def handle_unikernel(websocket):
     ip = websocket.remote_address[0]
     addr = f"{ip}:{websocket.remote_address[1]}"
     
-    if ip in ACTIVE_CLIENTS:
-        try:
-            old_ws = ACTIVE_CLIENTS[ip]
-            if not old_ws.closed:
-                console.print(f"[bold yellow][System][/bold yellow] Terminating stale connection for {ip}")
-                await old_ws.close(1001, "New connection replacing old one")
-        except: pass
+    with CLIENTS_LOCK:
+        if ip in ACTIVE_CLIENTS:
+            try:
+                old_info = ACTIVE_CLIENTS[ip]
+                old_ws = old_info["ws"]
+                if hasattr(old_ws, 'closed') and not old_ws.closed:
+                    console.print(f"[bold yellow][System][/bold yellow] Terminating stale connection for {ip}")
+                  
+            except Exception as e:
+                console.print(f"[dim yellow]Failed to check stale connection: {e}[/dim yellow]")
     
-    ACTIVE_CLIENTS[ip] = {
-        "ws": websocket,
-        "addr": addr,
-        "connected_at": time.time(),
-        "last_seen": time.time(),
-        "requests": 0
-    }
+
+    old_ws_to_close = None
+    with CLIENTS_LOCK:
+        if ip in ACTIVE_CLIENTS:
+            old_info = ACTIVE_CLIENTS[ip]
+            if hasattr(old_info["ws"], 'close') and not old_info["ws"].closed:
+                old_ws_to_close = old_info["ws"]
+
+    if old_ws_to_close:
+        try:
+            await old_ws_to_close.close(1001, "New connection replacing old one")
+        except: pass
+
+    with CLIENTS_LOCK:
+        ACTIVE_CLIENTS[ip] = {
+            "ws": websocket,
+            "addr": addr,
+            "connected_at": time.time(),
+            "last_seen": time.time(),
+            "requests": 0
+        }
     console.print(f"[{time.strftime('%H:%M:%S')}] Connected: [cyan]{addr}[/cyan]")
     
     async def send_to_ws(msg):
@@ -483,14 +529,21 @@ async def handle_unikernel(websocket):
                         req = msgpack.unpackb(data)
                     except Exception as ue:
                         console.print(f"[bold red]Unpack Error:[/bold red] {ue} (Size: {len(data)} bytes)")
-                        return
+
+                        try:
+                            req = json.loads(data.decode('utf-8', errors='ignore'))
+                            console.print(f"[dim yellow]Fallback to JSON decode[/dim yellow]")
+                        except Exception as je:
+                            console.print(f"[bold red]JSON decode failed:[/bold red] {je}")
+                            return
                 else:
                     req = json.loads(message)
                 
                 cmd = req.get("cmd", "unknown")
-                if ip in ACTIVE_CLIENTS:
-                    ACTIVE_CLIENTS[ip]["last_seen"] = time.time()
-                    ACTIVE_CLIENTS[ip]["requests"] += 1
+                with CLIENTS_LOCK:
+                    if ip in ACTIVE_CLIENTS:
+                        ACTIVE_CLIENTS[ip]["last_seen"] = time.time()
+                        ACTIVE_CLIENTS[ip]["requests"] += 1
                 
                 kernel = req.get("kernel", "")
                 target = f" ({kernel})" if kernel else ""
@@ -505,8 +558,9 @@ async def handle_unikernel(websocket):
     except Exception as e:
         console.print(f"[bold red]System Error:[/bold red] {e}")
     finally:
-        if ACTIVE_CLIENTS.get(ip) == websocket:
-            del ACTIVE_CLIENTS[ip]
+        with CLIENTS_LOCK:
+            if ip in ACTIVE_CLIENTS and ACTIVE_CLIENTS[ip]["ws"] == websocket:
+                del ACTIVE_CLIENTS[ip]
         console.print(f"[{time.strftime('%H:%M:%S')}] Disconnected: {addr}")
 
 def get_primary_ip():
@@ -516,50 +570,139 @@ def get_primary_ip():
         ip = s.getsockname()[0]
         s.close()
         return ip
-    except: return "127.0.0.1"
+    except Exception: return "127.0.0.1"
 
 async def dashboard_handler(request):
-    html = """
-    <html><head><title>UniKernel Cluster Dashboard</title>
-    <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #0b0f19; color: #e0e6ed; padding: 20px; }
-        .card { background: #1a1f2e; border-radius: 12px; padding: 20px; margin-bottom: 20px; border-left: 5px solid #00f2ff; }
-        h1 { color: #00f2ff; text-shadow: 0 0 10px rgba(0,242,255,0.3); }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #2d3748; }
-        .status { color: #00ff88; font-weight: bold; }
-        .gpu-telemetry { display: flex; gap: 20px; margin-top: 20px; }
-        .stat-box { background: #2d3748; padding: 15px; border-radius: 8px; flex: 1; text-align: center; }
-        .stat-val { font-size: 1.5rem; font-weight: bold; color: #7000ff; }
-    </style>
-    <meta http-equiv="refresh" content="2">
-    </head><body>
-    <h1>🕸️ UniKernel Cluster Dashboard</h1>
-    <div class="card">
-        <h3>Connected Nodes</h3>
-        <table>
-            <tr><th>IP Address</th><th>Connected At</th><th>Last Seen</th><th>Total Requests</th><th>Status</th></tr>
-    """
-    for ip, info in ACTIVE_CLIENTS.items():
+    tel = get_telemetry()
+    nodes_html = ""
+    with CLIENTS_LOCK:
+        current_clients = list(ACTIVE_CLIENTS.items())
+    
+    for ip, info in current_clients:
         conn_str = time.strftime('%H:%M:%S', time.localtime(info['connected_at']))
         seen_str = time.strftime('%H:%M:%S', time.localtime(info['last_seen']))
-        html += f"<tr><td>{ip}</td><td>{conn_str}</td><td>{seen_str}</td><td>{info['requests']}</td><td class='status'>ONLINE</td></tr>"
-    
-    tel = get_telemetry()
-    html += f"""
-        </table>
-    </div>
-    <div class="card">
-        <h3>GPU Telemetry</h3>
-        <div class="gpu-telemetry">
-            <div class="stat-box"><div>Temperature</div><div class="stat-val">{tel.get('temp', 0)}°C</div></div>
-            <div class="stat-box"><div>Utilization</div><div class="stat-val">{tel.get('util', 0)}%</div></div>
-            <div class="stat-box"><div>VRAM Used</div><div class="stat-val">{tel.get('mem', 0)} MB</div></div>
-            <div class="stat-box"><div>Power</div><div class="stat-val">{tel.get('pwr', 0)}W</div></div>
+        nodes_html += f"""
+        <div class="node-row">
+            <div class="node-cell"><span class="status-pulse"></span> {ip}</div>
+            <div class="node-cell">{conn_str}</div>
+            <div class="node-cell">{seen_str}</div>
+            <div class="node-cell">{info['requests']}</div>
+            <div class="node-cell"><span class="badge">ACTIVE</span></div>
+        </div>"""
+
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>UniKernel | Cluster Dashboard</title>
+        <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+        <style>
+            :root {{
+                --bg: #05070a;
+                --card-bg: rgba(17, 25, 40, 0.75);
+                --accent: #00f2ff;
+                --accent-alt: #7000ff;
+                --text: #f8fafc;
+                --text-dim: #94a3b8;
+                --glass-border: rgba(255, 255, 255, 0.1);
+            }}
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: 'Outfit', sans-serif;
+                background: var(--bg);
+                color: var(--text);
+                min-height: 100vh;
+                background-image: 
+                    radial-gradient(circle at 20% 30%, rgba(112, 0, 255, 0.15) 0%, transparent 40%),
+                    radial-gradient(circle at 80% 70%, rgba(0, 242, 255, 0.15) 0%, transparent 40%);
+                padding: 40px;
+            }}
+            .container {{ max-width: 1200px; margin: 0 auto; }}
+            header {{ margin-bottom: 40px; display: flex; justify-content: space-between; align-items: center; }}
+            h1 {{ font-weight: 600; letter-spacing: -1px; font-size: 2.5rem; }}
+            .status-tag {{ background: rgba(0, 242, 255, 0.1); border: 1px solid var(--accent); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; color: var(--accent); }}
+            
+            .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }}
+            .stat-card {{
+                background: var(--card-bg);
+                backdrop-filter: blur(12px);
+                border: 1px solid var(--glass-border);
+                padding: 25px;
+                border-radius: 24px;
+                text-align: center;
+                transition: transform 0.3s ease;
+            }}
+            .stat-card:hover {{ transform: translateY(-5px); border-color: rgba(255,255,255,0.2); }}
+            .stat-label {{ color: var(--text-dim); font-size: 0.9rem; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }}
+            .stat-value {{ font-size: 2rem; font-weight: 600; color: var(--accent); text-shadow: 0 0 20px rgba(0, 242, 255, 0.3); }}
+            .stat-card:nth-child(2) .stat-value {{ color: #ff4757; text-shadow: 0 0 20px rgba(255, 71, 87, 0.3); }}
+            .stat-card:nth-child(3) .stat-value {{ color: var(--accent-alt); text-shadow: 0 0 20px rgba(112, 0, 255, 0.3); }}
+
+            .section-card {{
+                background: var(--card-bg);
+                backdrop-filter: blur(12px);
+                border: 1px solid var(--glass-border);
+                border-radius: 24px;
+                padding: 30px;
+                overflow: hidden;
+            }}
+            h3 {{ margin-bottom: 25px; font-weight: 400; color: var(--text-dim); }}
+            
+            .node-table {{ width: 100%; border-collapse: collapse; }}
+            .node-header {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 15px 20px; border-bottom: 1px solid var(--glass-border); font-weight: 600; color: var(--text-dim); font-size: 0.9rem; }}
+            .node-row {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 20px; border-bottom: 1px solid rgba(255,255,255,0.05); align-items: center; transition: background 0.2s; }}
+            .node-row:hover {{ background: rgba(255,255,255,0.03); }}
+            .status-pulse {{ width: 8px; height: 8px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; animation: pulse 2s infinite; }}
+            @keyframes pulse {{ 0% {{ opacity: 0.4; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.4; }} }}
+            .badge {{ background: #00ff8822; color: #00ff88; padding: 4px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 600; }}
+        </style>
+        <meta http-equiv="refresh" content="2">
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <div>
+                    <h1>UniKernel Cluster</h1>
+                    <p style="color: var(--text-dim)">Unified Modular GPU Computing Framework</p>
+                </div>
+                <div class="status-tag">SYSTEM ONLINE</div>
+            </header>
+
+            <div class="grid">
+                <div class="stat-card">
+                    <div class="stat-label">Utilization</div>
+                    <div class="stat-value">{tel.get('util', 0)}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Temperature</div>
+                    <div class="stat-value">{tel.get('temp', 0)}°C</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">VRAM Usage</div>
+                    <div class="stat-value">{tel.get('mem', 0)} MB</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Power Draw</div>
+                    <div class="stat-value">{tel.get('pwr', 0)}W</div>
+                </div>
+            </div>
+
+            <div class="section-card">
+                <h3>Active Compute Nodes</h3>
+                <div class="node-header">
+                    <div>ENDPOINT</div>
+                    <div>JOINED</div>
+                    <div>LAST SEEN</div>
+                    <div>REQS</div>
+                    <div>STATUS</div>
+                </div>
+                {nodes_html if nodes_html else '<div style="padding: 40px; text-align: center; color: var(--text-dim)">Searching for nodes...</div>'}
+            </div>
         </div>
-    </div>
-    </body></html>
-    """
+    </body>
+    </html>"""
     return web.Response(text=html, content_type='text/html')
 
 async def server_main():
