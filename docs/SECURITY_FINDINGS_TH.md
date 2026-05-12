@@ -1,11 +1,47 @@
 # รายงานช่องโหว่ความปลอดภัย (Defensive) — UniKernel
 
 วันที่ตรวจสอบ: 2026-05-12  
-ขอบเขต: `Unikernel.ino`, `UniAccelHost.py`, เอกสารประกอบใน `README.md`, และรายงานเดิมใน `docs/AUDIT_REPORT.md`
+ขอบเขต: `Unikernel.ino`, `src/auth.cpp`, `src/commands.cpp`, `UniAccelHost.py`, `README.md`, และ `docs/AUDIT_REPORT.md`
 
 > เอกสารนี้เน้นการทดสอบเชิงป้องกันเท่านั้น ไม่ให้ขั้นตอนเจาะระบบเชิงรุก
 
-## 1) ช่องโหว่ระดับสูง (High)
+## 1) ช่องโหว่ซับซ้อนที่พบเพิ่มเติม
+
+### C-01: Authentication implementation gap บน ESP32 (`hashPass`)
+- **คำอธิบาย:** ใน `src/auth.cpp` ฟังก์ชัน `hashPass` มีเฉพาะ implementation สำหรับ ESP8266 ส่วน branch `#else` (เช่น ESP32) ไม่มี logic คำนวณ hash
+- **ผลกระทบ:** การยืนยันตัวตนอาจใช้ข้อมูลไม่ถูกต้อง/ไม่ได้ initialize ทำให้เกิดความเสี่ยง auth bypass หรือ auth failure แบบคาดเดาไม่ได้
+- **PoC เชิงป้องกัน:**
+  1. รัน build target ESP32
+  2. ทดสอบ login/password check หลายรอบด้วย credential เดิม
+  3. หากผลยืนยันตัวตนไม่ deterministic ให้ถือว่า fail และบล็อก release
+- **แนวทางแก้ไข:** เพิ่ม implementation hash สำหรับ ESP32 ให้เทียบเท่า ESP8266 และเพิ่ม unit test cross-platform
+
+### C-02: Policy bypass ผ่าน `shellDepth` ใน dispatcher
+- **คำอธิบาย:** ใน `dispatchCommand` เงื่อนไขบังคับ auth คือ `if (c.authRequired && !currentAuth && shellDepth == 0)`
+- **ผลกระทบ:** เมื่อ `shellDepth > 0` คำสั่งที่ต้อง auth อาจถูกรันได้แม้ยังไม่ login (ขึ้นกับ flow ที่เพิ่ม depth)
+- **PoC เชิงป้องกัน:**
+  1. สร้าง integration test จำลอง nested shell/context ที่ทำให้ `shellDepth` เพิ่ม
+  2. เรียกคำสั่ง protected (`passwd`, `telnet`, `ota`, `firewall`)
+  3. คาดหวังผล: ต้องถูกปฏิเสธทั้งหมดหากไม่ authenticated
+- **แนวทางแก้ไข:** แยกนโยบาย auth ออกจาก shell depth โดยตรวจสิทธิ์ทุกครั้งก่อน execute คำสั่ง protected
+
+### C-03: Salt handling ใช้ `strlen` กับข้อมูล EEPROM
+- **คำอธิบาย:** salt ถูกอ่านจาก EEPROM แล้วนำไปใช้ผ่าน `strlen(salt)` ซึ่งไม่เหมาะกับข้อมูลไบนารี
+- **ผลกระทบ:** ถ้า salt มี null byte ก่อนครบความยาว จะทำให้ entropy ที่ใช้ hash ลดลงโดยไม่ตั้งใจ
+- **PoC เชิงป้องกัน:**
+  1. เขียน salt ที่มี null byte ตรงกลาง
+  2. ตรวจว่าผล hash ต้องยังพึ่งพา salt ครบ `PASS_SALT_LEN`
+- **แนวทางแก้ไข:** ใช้ความยาวคงที่ (`PASS_SALT_LEN`) ใน hash function และเก็บ salt แบบไบนารีชัดเจน
+
+### C-04: ความเสี่ยง DoS จาก dynamic allocation (`strdup`) ใน command path
+- **คำอธิบาย:** `dispatchCommand` ใช้ `strdup(line)` ทุกคำสั่ง โดยไม่มีตรวจ null-return
+- **ผลกระทบ:** เมื่อหน่วยความจำตึง อาจเกิด null dereference หรือ crash/reset ได้
+- **PoC เชิงป้องกัน:**
+  1. stress test ด้วยคำสั่งถี่/ยาวภายใต้หน่วยความจำต่ำ
+  2. คาดหวังว่าเมื่อ alloc fail ต้องตอบ error และไม่ crash
+- **แนวทางแก้ไข:** ตรวจผลลัพธ์ `strdup` ก่อนใช้ และพิจารณาใช้ buffer คงที่แทน allocation บ่อยครั้ง
+
+## 2) ช่องโหว่ระดับสูง (High)
 
 ### H-01: ความสามารถฝั่งโฮสต์ที่เสี่ยงต่อ Remote Code Execution (`gpu_inject`)
 - **คำอธิบาย:** รายงานเดิมระบุว่ามีคำสั่ง `gpu_inject` ที่ยอมรับโค้ด CUDA เพื่อคอมไพล์/รันบนโฮสต์
@@ -42,32 +78,26 @@
   2. สแกนพอร์ตบนอุปกรณ์หลังบูตแล้วต้องไม่พบพอร์ต telnet
 - **แนวทางแก้ไข:** ปิดถาวรใน production หรือใช้ compile-time flag ที่ default = off
 
-## 2) ช่องโหว่ระดับกลาง (Medium)
+## 3) ช่องโหว่ระดับกลาง (Medium)
 
-### M-01: Salt รหัสผ่านสั้นเกินไป (`PASS_SALT_LEN = 4`)
-- **ความเสี่ยง:** ลดต้นทุน brute-force/offline cracking
-- **PoC เชิงป้องกัน:** unit test ตรวจ policy ว่า salt ขั้นต่ำ 16 bytes
-- **แนวทางแก้ไข:** เพิ่ม salt >= 16 bytes และใช้ KDF ที่แข็งแรงขึ้นตามข้อจำกัด MCU
+### M-01: Salt รหัสผ่านสั้นเกินไป (`PASS_SALT_LEN = 16` ควร enforce binary-safe + KDF)
+- **ความเสี่ยง:** แม้ยาวขึ้นแล้ว แต่ถ้าไม่ใช้ KDF ที่เหมาะสมยังเสี่ยง offline cracking
+- **PoC เชิงป้องกัน:** unit test ตรวจ policy (salt, rounds, format)
+- **แนวทางแก้ไข:** คง salt >= 16 bytes, เพิ่ม KDF cost ตามข้อจำกัด MCU
 
 ### M-02: `except: pass` ในโฮสต์ Python
 - **ความเสี่ยง:** กลบข้อผิดพลาดสำคัญ ทำให้ระบบ fallback แบบไม่ปลอดภัย
 - **PoC เชิงป้องกัน:** บังคับ fault injection แล้วคาดหวังว่าระบบ log และ fail-closed
 - **แนวทางแก้ไข:** จับ exception แบบเจาะจง + structured logging
 
-## 3) แผนทดสอบยืนยันการแก้ไข (Verification Checklist)
+## 4) แผนทดสอบยืนยันการแก้ไข (Verification Checklist)
+1. **Cross-platform Auth**: ผล auth ต้อง deterministic ทั้ง ESP8266/ESP32
+2. **Authorization Invariant**: protected command ต้อง require auth เสมอ ไม่ขึ้นกับ shell depth
+3. **Crypto Hygiene**: salt/hash ใช้ binary-safe handling
+4. **Dangerous Feature Flag**: `gpu_inject` ปิดใน production
+5. **Transport Security**: ไม่มี telnet ใน production
+6. **Logging Hygiene**: redact credential ทุกช่องทาง
 
-1. **Auth/Session**
-   - ปฏิเสธ credential ใน URL
-   - จำกัดอายุ token + revoke ได้
-2. **OTA Security**
-   - OTA disabled จนกว่าจะตั้ง secret ที่ผ่าน policy
-3. **Dangerous Feature Flag**
-   - `gpu_inject` ปิดใน production และเปิดได้เฉพาะ local admin mode
-4. **Transport Security**
-   - ไม่มี telnet ใน production, ใช้ช่องทางเข้ารหัสเท่านั้น
-5. **Logging Hygiene**
-   - redaction ข้อมูลลับใน logs, query/body/header
-
-## 4) สรุป
-- ช่องโหว่สำคัญที่สุดคือความสามารถที่อาจนำไปสู่การรันโค้ดบนโฮสต์, การตั้งค่าค่าเริ่มต้นที่อ่อนแอ, และการส่ง credential แบบไม่ปลอดภัย
-- ควรเริ่มแก้ที่การ “ปิดความเสี่ยงสูงโดย default” ก่อน แล้วค่อยทำ hardening ระยะกลาง
+## 5) สรุป
+- ช่องโหว่ที่ซับซ้อนที่สุดรอบนี้คือ logic gap ข้ามแพลตฟอร์ม (ESP32 hash), policy bypass condition (`shellDepth`), และการจัดการ salt ที่ไม่ binary-safe
+- ควรทำ security regression test ที่เจาะจง invariant เหล่านี้ก่อน release
