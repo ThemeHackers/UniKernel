@@ -18,8 +18,8 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `mkdir` | `mkdir [name]` | Create a new directory. |
 | `touch` | `touch [name]` | Create a new empty file. |
 | `cat` | `cat [filename]` | Display the contents of a file. |
-| `echo` | `echo [text] > [file]` | Write text to a file (Overwrites existing content). |
-| `append` | `append [file] [text]` | Append text to the end of a file. |
+| `echo` | `echo [text] > [file]` | Write text to a file (Quotes are automatically stripped). |
+| `append` | `append [file] [text]` | Append text to the end of a file (Quotes are stripped). |
 | `cp` | `cp [source] [destination]` | Copy a file to a new location. |
 | `mv` | `mv [source] [destination]` | Move or rename a file/directory. |
 | `rm` | `rm [name]` | Delete a file or directory. |
@@ -56,10 +56,12 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 ### 1.3 Networking and Communication
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| `wifi` | `wifi connect [ssid] [pass]` | Configure and establish a WiFi connection. |
-| `wifi` | `wifi [scan/status/off]` | Manage WiFi operational status. |
+| `wifi` | `wifi connect <S> [P]` | Connect to SSID with optional Password (supports quotes for spaces). |
+| `wifi` | `wifi mode <sta/ap>` | Toggle between Station and Access Point modes. |
+| `wifi` | `wifi ap <S> <P>` | Setup and enable local Access Point. |
+| `waitwifi` | `waitwifi` | Block execution until WiFi is connected (ideal for boot scripts). |
 | `ifconfig` | `ifconfig` | Display network configuration (IP, Gateway, MAC). |
-| `ping` | `ping [host]` | Test network connectivity to a remote host. |
+| `ping` | `ping [host]` | Real network test with DNS resolution and full statistics. |
 | `wget` | `wget [url] [filename]` | Retrieve data from the internet via HTTP protocol. |
 | `ntp` | `ntp` | Synchronize system time via Network Time Protocol. |
 | `telnet` | `telnet [on/off]` | Enable/Disable remote access (Unsafe, Disabled by default). |
@@ -81,7 +83,8 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `cpu` | `cpu [80/160]` | Adjust the CPU clock frequency (MHz) at runtime. |
 | `sleep` | `sleep [seconds]` | Enter Light Sleep mode for a specified duration. |
 | `reboot` | `reboot` | Perform a system hardware restart. |
-| `boot` | `boot [file/list/reset]` | Manage startup boot scripts and profiles. |
+| `boot` | `boot [filename]` | Set custom boot script (stored in EEPROM). |
+| `boot` | `boot reset` | Reset custom boot script to default. |
 | `neofetch` | `neofetch` | Display system information banner. |
 | `clear` | `clear` | Clear the terminal screen. |
 | `dmesg` | `dmesg` | Display kernel log messages. |
@@ -93,9 +96,9 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 ### 1.5 Security and Utilities
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| `login` | `login [password]` | Authenticate as root (Uses **Salted SHA-256**). |
+| `login` | `login [password]` | Authenticate as root (Uses **PBKDF2-style 1000 Iterations**). |
 | `logout` | `logout` | Terminate the current session. |
-| `passwd` | `passwd [new_pass]` | Change root password (128-bit entropy salted hash). |
+| `passwd` | `passwd [new_pass]` | Change root password (**Iterative Hash + Random Salt Rotation**). |
 | `firewall` | `firewall allow [IP]` | Whitelist an IP for Shell, Web, and API access. |
 | `ota` | `ota on` | Enable wireless firmware updates. |
 | `ota` | `ota setpass [pass]` | Set OTA password (**MD5 Hash Storage**). |
@@ -113,8 +116,10 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 
 ## 2. Security and Access Protocols
 
-*   **Authentication:** Sensitive commands require root privileges. All passwords are secured with **Salted SHA-256 (16-byte salt)**.
+*   **Authentication:** Sensitive commands require root privileges. All passwords are secured with **Iterative SHA-256 (1000 rounds)** providing PBKDF2-level security.
+*   **Salt Rotation:** Every password change generates a new 16-byte random salt, stored securely in separate EEPROM sectors.
 *   **Brute-Force Protection:** Exponential backoff (Cooldown) triggered after failed logins. 5 consecutive fails trigger a **300s system lockout**.
+*   **Physical Protection:** System boot scripts (`[0-2]rc.sh`) can only be modified via **Serial Console** to prevent remote persistent threats.
 *   **Encrypted Shell (SSH):** Advanced encryption using **Elliptic Curve P-256 (secp256r1)** for fast and secure remote management.
 *   **Hardened Firewall:** Whitelist your IP using `firewall allow [IP]`. This protects Serial, Telnet, SSH, and the **Web API/Dashboard**.
 *   **OTA Security:** Firmware updates are disabled by default. A **SHA-256 Hashed** password must be configured in EEPROM before OTA can be enabled.
@@ -122,7 +127,7 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 
 ## 3. Technical Specifications
 
-*   **Platform:** ESP8266 (NodeMCU / Wemos D1 Mini)
+*   **Platform:** ESP8266 (NodeMCU / Wemos) & **ESP32 (DevKit / D1)**
 *   **CPU Speed:** 160 MHz (Optimized Default)
 *   **Communication:** Serial Baud 115200 / Telnet Port 23 / HTTP Port 80 / SSH Port 22
 *   **File System:** Hybrid VFS (RAM-based) + LittleFS (Persistent Flash-based)
@@ -156,8 +161,8 @@ Access hardware directly via the filesystem:
 
 ### 5.2 Physical Reset Button (FLASH/GPIO 0)
 Use the physical button on your board to recover access:
-1. **Double Click (2x):** Manual Unlock (Resets `loginFailCount`).
-2. **Triple Click (3x):** Factory Reset (Clears Password and Fail Count).
+1. **Double Click (2x):** Manual Unlock (Resets login fail count and cooldown).
+2. **Triple Click (3x):** Factory Reset (Clears stored password, salt, and boot settings).
 
 ---
 
@@ -258,3 +263,19 @@ If your GPU Host has restricted internet access, use `hf offline` to prevent the
 ---
 
 
+---
+
+## 8. Advanced Boot Sequence
+
+UniKernel follows a structured multi-script boot sequence to ensure system stability and modularity:
+
+1.  **Standard System Scripts**: The kernel checks for and executes **`0rc.sh`**, **`1rc.sh`**, and **`2rc.sh`** in sequence if they exist in the root directory.
+2.  **Custom Boot Script**: Finally, the kernel executes the custom filename stored in EEPROM (configurable via the `boot` command).
+3.  **Privilege Elevation**: All scripts executed during the automated boot sequence are granted **Root Privileges** temporarily, regardless of current authentication state.
+
+## 9. System File Protection
+
+To prevent remote attackers from establishing persistence, UniKernel implements **System Immutability** for critical boot files:
+- **Protected Files**: `0rc.sh`, `1rc.sh`, `2rc.sh`.
+- **Restriction**: These files can **ONLY** be created, modified, or deleted through a **Serial Console session** (Physical access).
+- **Remote Access**: Any attempt to modify these files via Telnet, SSH, or Web Dashboard will be rejected with a `403 Forbidden` error, even if the user is authenticated.

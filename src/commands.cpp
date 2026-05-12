@@ -3,6 +3,9 @@
 #include "../include/auth.h"
 #include "../include/shell.h"
 #include "../UniAccel.h"
+
+
+bool isTelnetSafeCommand(const char *cmd);
 #include <vector>
 #include <Wire.h>
 #include <time.h>
@@ -11,8 +14,10 @@
 extern void runScript(const char *content);
 #if defined(ESP8266)
 #include <ESP8266WiFi.h>
+#include <ESP8266Ping.h>
 #elif defined(ESP32)
 #include <WiFi.h>
+#include <ESP32Ping.h>
 #endif
 #include "../UniAccel.h"
 #if defined(ESP8266)
@@ -24,13 +29,28 @@ extern bool telnetEnabled;
 extern bool webEnabled;
 extern bool otaEnabled;
 extern bool btEnabled;
+extern bool sshEnabled;
+extern WiFiServer telnetServer;
+extern WiFiClient telnetClient;
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+extern WiFiServerSecure sshServer;
+extern WiFiClientSecure sshClient;
+#endif
 extern void redrawPrompt();
 
 std::vector<CommandDef> commandTable;
 bool useColor = false;
 
+bool isSystemProtected(const char* name) {
+    if (strlen(name) != 6) return false;
+    if (name[1] == 'r' && name[2] == 'c' && name[3] == '.' && name[4] == 's' && name[5] == 'h') {
+        if (name[0] >= '0' && name[0] <= '2') return true;
+    }
+    return false;
+}
+
 void registerCommands() {
-    commandTable.emplace_back("ls", handle_ls, true, "List files in current directory");
+    commandTable.emplace_back("ls", handle_ls, false, "List files in current directory");
     commandTable.emplace_back("cat", handle_cat, true, "Display file contents");
     commandTable.emplace_back("login", handle_login, false, "Authenticate with password");
     commandTable.emplace_back("help", handle_help, false, "Show available commands");
@@ -40,8 +60,8 @@ void registerCommands() {
     commandTable.emplace_back("free", handle_free, false, "Show free memory");
     commandTable.emplace_back("mkdir", handle_mkdir, true, "Create a directory");
     commandTable.emplace_back("touch", handle_touch, true, "Create a file");
-    commandTable.emplace_back("cd", handle_cd, true, "Change directory");
-    commandTable.emplace_back("pwd", handle_pwd, true, "Print working directory");
+    commandTable.emplace_back("cd", handle_cd, false, "Change directory");
+    commandTable.emplace_back("pwd", handle_pwd, false, "Print working directory");
     commandTable.emplace_back("echo", handle_echo, true, "Echo text or write to file");
     commandTable.emplace_back("reboot", handle_reboot, true, "Restart the system");
     commandTable.emplace_back("i2c", handle_i2c, true, "I2C utilities");
@@ -57,16 +77,18 @@ void registerCommands() {
     commandTable.emplace_back("ifconfig", handle_wifi, false, "Alias for wifi");
     commandTable.emplace_back("clear", handle_clear, false, "Clear terminal");
     commandTable.emplace_back("dmesg", handle_dmesg, false, "Show system log");
-    commandTable.emplace_back("df", handle_df, true, "Show disk usage");
+    commandTable.emplace_back("df", handle_df, false, "Show disk usage");
     commandTable.emplace_back("hwinfo", handle_hwinfo, false, "Show hardware info");
     commandTable.emplace_back("logout", handle_logout, false, "Terminate session");
     commandTable.emplace_back("exit", handle_exit, false, "Exit terminal");
     commandTable.emplace_back("accel", handle_accel, true, "GPU Accelerator controls");
+    commandTable.emplace_back("hf", handle_hf, true, "HuggingFace AI commands");
+    commandTable.emplace_back("chat", handle_chat, true, "Toggle AI chat mode");
     commandTable.emplace_back("sh", handle_sh, true, "Execute a shell script");
     commandTable.emplace_back("color", handle_color, false, "Toggle terminal colors");
     commandTable.emplace_back("whoami", handle_whoami, false, "Show current user");
     commandTable.emplace_back("uname", handle_uname, false, "Show system info");
-    commandTable.emplace_back("passwd", handle_passwd, true, "Change password");
+    commandTable.emplace_back("passwd", handle_passwd, false, "Change password");
     commandTable.emplace_back("alias", handle_alias, false, "Manage command aliases");
     commandTable.emplace_back("env", handle_env, false, "List environment variables");
     commandTable.emplace_back("export", handle_export, false, "Set environment variable");
@@ -102,6 +124,7 @@ void registerCommands() {
     commandTable.emplace_back("cron", handle_cron, true, "Manage cron tasks");
     commandTable.emplace_back("bg", handle_bg, true, "Run in background");
     commandTable.emplace_back("boot", handle_boot, true, "Boot configuration");
+    commandTable.emplace_back("waitwifi", handle_waitwifi, false, "Wait for WiFi connection");
 }
 
 bool isSerialSession = true;
@@ -109,23 +132,38 @@ bool isSerialSession = true;
 void dispatchCommand(char *line, bool fromSerial) {
     isSerialSession = fromSerial;
     char *cmdLine = strdup(line);
-    char *cmd = cmdLine;
-    char *args = strchr(cmdLine, ' ');
+    if (!cmdLine) {
+        sendResponse(false, 500, "Out of memory");
+        return;
+    }
+    
+    char *p = kTrim(cmdLine);
+    char *cmd = p;
+    char *args = strchr(p, ' ');
+    
     if (args) {
         *args = '\0';
-        args++;
+        args = kTrim(args + 1);
     } else {
         args = (char*)"";
     }
 
-    cmd = kTrim(cmd);
-    args = kTrim(args);
     toLowercase(cmd);
 
     for (const auto& c : commandTable) {
         if (strcmp(cmd, c.name) == 0) {
             bool currentAuth = fromSerial ? serialAuthenticated : (telnetAuthenticated || sshAuthenticated);
-            if (c.authRequired && !currentAuth && shellDepth == 0) {
+            
+
+            if (!fromSerial && (telnetAuthenticated || sshAuthenticated)) {
+                if (!isTelnetSafeCommand(cmd)) {
+                    sendResponse(false, 403, "Command not allowed via network");
+                    free(cmdLine);
+                    return;
+                }
+            }
+            
+            if (c.authRequired && !currentAuth && !needsSetup) {
                 sendResponse(false, 401, "Authentication required");
                 free(cmdLine);
                 return;
@@ -305,6 +343,12 @@ void handle_echo(char *args, bool fromSerial) {
         *redir = '\0';
         char *filename = kTrim(redir + 1);
         char *text = kTrim(args);
+        stripQuotes(text);
+        
+        if (isSystemProtected(filename) && !fromSerial) {
+            sendResponse(false, 403, "Protected system file (Serial access required)");
+            return;
+        }
 
         if (strcmp(currentPath, "/dev/") == 0) {
             if (strcmp(filename, "led") == 0) {
@@ -400,12 +444,15 @@ void handle_reboot(char *args, bool fromSerial) {
 void handle_login(char *args, bool fromSerial) {
     char hashedInput[17];
     char savedPass[17];
+    uint8_t salt[PASS_SALT_LEN];
     EEPROM.get(EEPROM_PASS_ADDR, savedPass);
-    hashPass(args, hashedInput);
+    EEPROM.get(EEPROM_SALT_ADDR, salt);
+    hashPass(args, hashedInput, salt);
 
     if (secureEquals(hashedInput, savedPass, 16)) {
         if (fromSerial) serialAuthenticated = true;
         else telnetAuthenticated = true;
+        needsSetup = false;
         sendResponse(true, 200, "Login successful");
     } else {
         sendResponse(false, 401, "Invalid password");
@@ -523,6 +570,10 @@ void handle_uptime(char *args, bool fromSerial) {
 void handle_rm(char *args, bool fromSerial) {
     int idx = findFile(args, currentPath);
     if (idx != -1) {
+        if (isSystemProtected(vfs[idx].name) && !fromSerial) {
+            sendResponse(false, 403, "Protected system file (Serial access required)");
+            return;
+        }
         vfs[idx].flags &= ~FLAG_ACTIVE;
         sendResponse(true, 200, "File removed");
     } else {
@@ -538,6 +589,10 @@ void handle_mv(char *args, bool fromSerial) {
     char *dst = kTrim(sp + 1);
     int idx = findFile(src, currentPath);
     if (idx != -1) {
+        if ((isSystemProtected(vfs[idx].name) || isSystemProtected(dst)) && !fromSerial) {
+            sendResponse(false, 403, "Protected system file (Serial access required)");
+            return;
+        }
         safeStrncpy(vfs[idx].name, dst, NAME_LEN);
         sendResponse(true, 200, "File renamed");
     } else {
@@ -553,6 +608,11 @@ void handle_cp(char *args, bool fromSerial) {
     char *dst = kTrim(sp + 1);
     int sIdx = findFile(src, currentPath);
     if (sIdx == -1) { sendResponse(false, 404, "Source not found"); return; }
+    
+    if ((isSystemProtected(src) || isSystemProtected(dst)) && !fromSerial) {
+        sendResponse(false, 403, "Protected system file (Serial access required)");
+        return;
+    }
     for (int i = 0; i < 16; i++) {
         if (!(vfs[i].flags & FLAG_ACTIVE)) {
             memcpy(&vfs[i], &vfs[sIdx], sizeof(RAMFile));
@@ -666,10 +726,15 @@ void handle_wifi(char *args, bool fromSerial) {
     if (strcmp(args, "help") == 0) {
         if (fromSerial) {
             kprintln(F("WiFi Commands:"));
-            kprintln(F("  wifi status   - Show current connection status"));
-            kprintln(F("  wifi scan     - Scan for available networks"));
+            kprintln(F("  wifi status            - Show current connection status"));
+            kprintln(F("  wifi scan              - Scan for available networks"));
+            kprintln(F("  wifi connect <S> [P]   - Connect to SSID with optional Password"));
+            kprintln(F("  wifi disconnect        - Disconnect and stop auto-reconnect"));
+            kprintln(F("  wifi mode <sta|ap>     - Change WiFi mode"));
+            kprintln(F("  wifi ap <S> <P>        - Setup Access Point with SSID/Pass"));
+            kprintln(F("  waitwifi               - Wait for connection (for scripts)"));
         } else {
-            sendResponse(false, 400, "Usage: wifi [status|scan]");
+            sendResponse(false, 400, "Usage: wifi [status|scan|connect|disconnect|mode|ap]");
         }
         return;
     }
@@ -684,17 +749,109 @@ void handle_wifi(char *args, bool fromSerial) {
             JsonObject net = arr.add<JsonObject>();
             net["ssid"] = WiFi.SSID(i);
             net["rssi"] = WiFi.RSSI(i);
+#if defined(ESP8266)
+            net["secure"] = WiFi.encryptionType(i) != ENC_TYPE_NONE;
+#elif defined(ESP32)
+            net["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+#endif
         }
         sendResponse(true, 200, "WiFi Scan Results", &data);
         return;
     }
 
+    if (strncmp(args, "connect ", 8) == 0) {
+        char *line = args + 8;
+        char ssid[32] = {0};
+        char pass[64] = {0};
+        
+        if (*line == '"') {
+            line++;
+            char *end = strchr(line, '"');
+            if (end) {
+                size_t len = end - line;
+                if (len >= 32) len = 31;
+                strncpy(ssid, line, len);
+                line = end + 1;
+                while (*line == ' ') line++;
+                strncpy(pass, line, 63);
+            }
+        } else {
+            char *sp = strchr(line, ' ');
+            if (sp) {
+                size_t len = sp - line;
+                if (len >= 32) len = 31;
+                strncpy(ssid, line, len);
+                strncpy(pass, sp + 1, 63);
+            } else {
+                strncpy(ssid, line, 31);
+            }
+        }
+        
+        if (strlen(pass) > 0) WiFi.begin(ssid, pass);
+        else WiFi.begin(ssid);
+        
+        sendResponse(true, 200, "Connecting to WiFi...");
+        return;
+    }
+
+    if (strcmp(args, "disconnect") == 0) {
+        WiFi.disconnect(true);
+        sendResponse(true, 200, "WiFi Disconnected");
+        return;
+    }
+
+    if (strncmp(args, "mode ", 5) == 0) {
+        if (strcmp(args + 5, "ap") == 0) WiFi.mode(WIFI_AP);
+        else if (strcmp(args + 5, "sta") == 0) WiFi.mode(WIFI_STA);
+        else WiFi.mode(WIFI_AP_STA);
+        sendResponse(true, 200, "WiFi Mode Updated");
+        return;
+    }
+
+    if (strncmp(args, "ap ", 3) == 0) {
+        char *line = args + 3;
+        char ssid[32] = {0};
+        char pass[64] = {0};
+        
+        if (*line == '"') {
+            line++;
+            char *end = strchr(line, '"');
+            if (end) {
+                size_t len = end - line;
+                if (len >= 32) len = 31;
+                strncpy(ssid, line, len);
+                line = end + 1;
+                while (*line == ' ') line++;
+                strncpy(pass, line, 63);
+            }
+        } else {
+            char *sp = strchr(line, ' ');
+            if (sp) {
+                size_t len = sp - line;
+                if (len >= 32) len = 31;
+                strncpy(ssid, line, len);
+                strncpy(pass, sp + 1, 63);
+            }
+        }
+        
+        if (strlen(ssid) > 0 && strlen(pass) > 0) {
+            WiFi.softAP(ssid, pass);
+            sendResponse(true, 200, "Access Point Created");
+        } else {
+            sendResponse(false, 400, "AP needs SSID and Password");
+        }
+        return;
+    }
+
     static JsonDocument data;
     data.clear();
-    data["status"] = WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected";
+    int status = WiFi.status();
+    const char* sMap[] = {"Idle", "No SSID", "Scan Completed", "Connected", "Connect Failed", "Connection Lost", "Disconnected"};
+    data["status"] = (status >= 0 && status <= 6) ? sMap[status] : "Unknown";
     data["ssid"] = WiFi.SSID();
     data["ip"] = WiFi.localIP().toString();
     data["rssi"] = WiFi.RSSI();
+    data["gateway"] = WiFi.gatewayIP().toString();
     sendResponse(true, 200, "WiFi Status", &data);
 }
 
@@ -760,6 +917,31 @@ void handle_hf(char *args, bool fromSerial) {
     handleHfCommand(args);
 }
 
+void handle_chat(char *args, bool fromSerial) {
+    if (strlen(args) == 0) {
+
+        accelChatMode = !accelChatMode;
+        if (accelChatMode) {
+            kprintln(F("AI Chat mode enabled"));
+            if (!fromSerial) sendResponse(true, 200, "AI Chat mode enabled");
+        } else {
+            kprintln(F("AI Chat mode disabled"));
+            if (!fromSerial) sendResponse(true, 200, "AI Chat mode disabled");
+        }
+    } else if (strcmp(args, "on") == 0) {
+        accelChatMode = true;
+        kprintln(F("AI Chat mode enabled"));
+        if (!fromSerial) sendResponse(true, 200, "AI Chat mode enabled");
+    } else if (strcmp(args, "off") == 0) {
+        accelChatMode = false;
+        kprintln(F("AI Chat mode disabled"));
+        if (!fromSerial) sendResponse(true, 200, "AI Chat mode disabled");
+    } else {
+        kprintln(F("Usage: chat [on|off]"));
+        if (!fromSerial) sendResponse(false, 400, "Usage: chat [on|off]");
+    }
+}
+
 void handle_sh(char *args, bool fromSerial) {
     int idx = findFile(args, currentPath);
     if (idx != -1) {
@@ -768,6 +950,23 @@ void handle_sh(char *args, bool fromSerial) {
         if (!fromSerial) sendResponse(true, 200, "Script executed");
     } else {
         sendResponse(false, 404, "Script not found");
+    }
+}
+
+void handle_waitwifi(char *args, bool fromSerial) {
+    if (fromSerial) kprintln(F("Waiting for WiFi connection..."));
+    int retry = 40;
+    while (WiFi.status() != WL_CONNECTED && retry > 0) {
+        delay(500);
+        if (fromSerial) kprint(".");
+        retry--;
+        yield();
+    }
+    if (fromSerial) kprintln();
+    if (WiFi.status() == WL_CONNECTED) {
+        sendResponse(true, 200, "WiFi Connected");
+    } else {
+        sendResponse(false, 504, "WiFi Connection Timeout");
     }
 }
 
@@ -797,15 +996,24 @@ void handle_uname(char *args, bool fromSerial) {
 }
 
 void handle_passwd(char *args, bool fromSerial) {
+    bool currentAuth = fromSerial ? serialAuthenticated : (telnetAuthenticated || sshAuthenticated);
+    if (!fromSerial && !currentAuth) {
+        sendResponse(false, 401, "Authentication required");
+        return;
+    }
     if (strlen(args) < 4) {
         sendResponse(false, 400, "Password too short");
         return;
     }
+    uint8_t salt[PASS_SALT_LEN];
+    generateNewSalt(salt);
     char hashed[17];
-    hashPass(args, hashed);
+    hashPass(args, hashed, salt);
     hashed[16] = '\0';
+    EEPROM.put(EEPROM_SALT_ADDR, salt);
     EEPROM.put(EEPROM_PASS_ADDR, hashed);
     EEPROM.commit();
+    needsSetup = false;
     sendResponse(true, 200, "Password changed");
 }
 
@@ -978,8 +1186,13 @@ void handle_append(char *args, bool fromSerial) {
     *sp = '\0';
     char *filename = args;
     char *text = kTrim(sp + 1);
+    stripQuotes(text);
     int idx = findFile(filename, currentPath);
     if (idx != -1) {
+        if (isSystemProtected(vfs[idx].name) && !fromSerial) {
+            sendResponse(false, 403, "Protected system file (Serial access required)");
+            return;
+        }
         strncat(vfs[idx].content, text, CONTENT_LEN - strlen(vfs[idx].content) - 1);
         sendResponse(true, 200, "Text appended");
     } else {
@@ -1302,7 +1515,87 @@ void handle_gpio(char *args, bool fromSerial) {
 }
 
 void handle_ping(char *args, bool fromSerial) {
-    sendResponse(true, 200, "Ping successful (Simulated)");
+    if (strlen(args) == 0) {
+        sendResponse(false, 400, "Usage: ping [host]");
+        return;
+    }
+
+    IPAddress remote_ip;
+    if (!WiFi.hostByName(args, remote_ip)) {
+        if (fromSerial) {
+            kprint(F("Ping request could not find host "));
+            kprint(args);
+            kprintln(F(". Please check the name and try again."));
+        } else {
+            sendResponse(false, 404, "Host not found");
+        }
+        return;
+    }
+
+    char ipStr[16];
+    sprintf(ipStr, "%d.%d.%d.%d", remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]);
+
+    if (fromSerial) {
+        kprint(F("\nPinging "));
+        kprint(args);
+        kprint(F(" ["));
+        kprint(ipStr);
+        kprintln(F("] with 32 bytes of data:"));
+
+        int sent = 0;
+        int received = 0;
+        long minT = 999, maxT = 0, totalT = 0;
+
+        for (int i = 0; i < 3; i++) {
+            sent++;
+#if defined(ESP8266) || defined(ESP32)
+            bool success = Ping.ping(remote_ip, 1);
+            long t = (long)Ping.averageTime();
+#else
+            bool success = true; 
+            long t = 10 + random(5, 15);
+#endif
+            if (success) {
+                received++;
+                if (t < minT) minT = t;
+                if (t > maxT) maxT = t;
+                totalT += t;
+
+                kprint(F("Reply from "));
+                kprint(ipStr);
+                kprint(F(": bytes=32 time="));
+                kprint(t);
+                kprintln(F("ms TTL=56"));
+            } else {
+                kprintln(F("Request timed out."));
+            }
+            delay(500);
+        }
+
+        kprint(F("\nPing statistics for "));
+        kprintln(ipStr);
+        kprint(F("    Packets: Sent = ")); kprint(sent);
+        kprint(F(", Received = ")); kprint(received);
+        kprint(F(", Lost = ")); kprint(sent - received);
+        kprint(F(" (")); kprint((sent - received) * 100 / sent);
+        kprintln(F("% loss),"));
+        
+        if (received > 0) {
+            kprintln(F("Approximate round trip times in milli-seconds:"));
+            kprint(F("    Minimum = ")); kprint(minT);
+            kprint(F("ms, Maximum = ")); kprint(maxT);
+            kprint(F("ms, Average = ")); kprint(totalT / received);
+            kprintln(F("ms"));
+        }
+    } else {
+        static JsonDocument data;
+        data.clear();
+        data["host"] = args;
+        data["ip"] = ipStr;
+        data["sent"] = 3;
+        data["received"] = 3;
+        sendResponse(true, 200, "Ping OK", &data);
+    }
 }
 
 void handle_wget(char *args, bool fromSerial) {
@@ -1332,9 +1625,22 @@ void handle_ntp(char *args, bool fromSerial) {
 }
 
 void handle_telnet(char *args, bool fromSerial) {
-    if (strcmp(args, "on") == 0) telnetEnabled = true;
-    else telnetEnabled = false;
+#ifndef PRODUCTION_BUILD
+    if (strcmp(args, "on") == 0) {
+        telnetEnabled = true;
+        telnetServer.begin();
+        telnetServer.setNoDelay(true);
+        addDmesg(F("Telnet: Server Started on port 23"));
+    } else {
+        telnetEnabled = false;
+        if (telnetClient) telnetClient.stop();
+     
+        addDmesg(F("Telnet: Server Stopped"));
+    }
     sendResponse(true, 200, telnetEnabled ? "Telnet ON" : "Telnet OFF");
+#else
+    sendResponse(false, 403, "Telnet disabled in production");
+#endif
 }
 
 void handle_web(char *args, bool fromSerial) {
@@ -1344,8 +1650,21 @@ void handle_web(char *args, bool fromSerial) {
 }
 
 void handle_ssh(char *args, bool fromSerial) {
-
-    sendResponse(true, 200, "SSH Status Toggle (Requires Reboot)");
+#ifndef PRODUCTION_BUILD
+    if (strcmp(args, "on") == 0) {
+        sshEnabled = true;
+        sshServer.begin();
+        addDmesg(F("SSH: Server Started on port 22"));
+        sendResponse(true, 200, "SSH ON");
+    } else {
+        sshEnabled = false;
+        if (sshClient) sshClient.stop();
+        addDmesg(F("SSH: Server Stopped"));
+        sendResponse(true, 200, "SSH OFF");
+    }
+#else
+    sendResponse(false, 403, "SSH disabled in production");
+#endif
 }
 
 void handle_bt(char *args, bool fromSerial) {

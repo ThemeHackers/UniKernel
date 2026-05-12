@@ -6,6 +6,7 @@
 void registerCommands();
 void dispatchCommand(char *line, bool fromSerial);
 void handle_boot(char *args, bool fromSerial);
+bool isSystemProtected(const char* name);
 
 
 void handle_ls(char *args, bool fromSerial);
@@ -44,6 +45,7 @@ void handle_logout(char *args, bool fromSerial);
 void handle_exit(char *args, bool fromSerial);
 void handle_accel(char *args, bool fromSerial);
 void handle_hf(char *args, bool fromSerial);
+void handle_chat(char *args, bool fromSerial);
 void handle_sh(char *args, bool fromSerial);
 void handle_color(char *args, bool fromSerial);
 void handle_whoami(char *args, bool fromSerial);
@@ -84,5 +86,6 @@ void handle_netstat(char *args, bool fromSerial);
 void handle_cron(char *args, bool fromSerial);
 void handle_bg(char *args, bool fromSerial);
 void handle_chat(char *args, bool fromSerial);
+void handle_waitwifi(char *args, bool fromSerial);
 
 #endif

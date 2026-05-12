@@ -1,5 +1,8 @@
 #include "../include/auth.h"
 #include <EEPROM.h>
+#if defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+#include <mbedtls/sha256.h>
+#endif
 
 
 
@@ -16,25 +19,58 @@ bool isIpAllowed(IPAddress ip) {
     return ip.toString() == String(whitelistIP);
 }
 
-void hashPass(const char *input, char *output) {
-  char salt[PASS_SALT_LEN + 1];
-  EEPROM.get(EEPROM_SALT_ADDR, salt);
-  salt[PASS_SALT_LEN] = '\0';
-
+void hashPass(const char *input, char *output, const uint8_t *salt) {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+  uint8_t currentHash[32];
   br_sha256_context ctx;
+  
+
   br_sha256_init(&ctx);
-  br_sha256_update(&ctx, salt, strlen(salt));
+  br_sha256_update(&ctx, salt, PASS_SALT_LEN);
   br_sha256_update(&ctx, input, strlen(input));
-  uint8_t hash[32];
-  br_sha256_out(&ctx, hash);
+  br_sha256_out(&ctx, currentHash);
+  
+
+  for (int i = 1; i < 1000; i++) {
+    br_sha256_init(&ctx);
+    br_sha256_update(&ctx, currentHash, 32);
+    br_sha256_out(&ctx, currentHash);
+    if (i % 100 == 0) yield();
+  }
+  
   for (int i = 0; i < 16; i++) {
-    output[i] = hash[i];
+    output[i] = currentHash[i];
   }
   output[16] = '\0';
-#else
-
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
+  uint8_t currentHash[32];
+  mbedtls_sha256_context ctx;
+  
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts_ret(&ctx, 0);
+  mbedtls_sha256_update_ret(&ctx, salt, PASS_SALT_LEN);
+  mbedtls_sha256_update_ret(&ctx, (const unsigned char*)input, strlen(input));
+  mbedtls_sha256_finish_ret(&ctx, currentHash);
+  
+  for (int i = 1; i < 1000; i++) {
+    mbedtls_sha256_starts_ret(&ctx, 0);
+    mbedtls_sha256_update_ret(&ctx, currentHash, 32);
+    mbedtls_sha256_finish_ret(&ctx, currentHash);
+    if (i % 100 == 0) yield();
+  }
+  mbedtls_sha256_free(&ctx);
+  
+  for (int i = 0; i < 16; i++) {
+    output[i] = currentHash[i];
+  }
+  output[16] = '\0';
 #endif
+}
+
+void generateNewSalt(uint8_t *salt) {
+    for (int i = 0; i < PASS_SALT_LEN; i++) {
+        salt[i] = (uint8_t)os_random() % 256;
+    }
 }
 
 bool secureEquals(const char *a, const char *b, size_t len) {
@@ -52,8 +88,10 @@ bool checkWebAuth(String pass, IPAddress remoteIp) {
 
   char hashedInput[17];
   char savedPass[17];
+  uint8_t salt[PASS_SALT_LEN];
   EEPROM.get(EEPROM_PASS_ADDR, savedPass);
-  hashPass(pass.c_str(), hashedInput);
+  EEPROM.get(EEPROM_SALT_ADDR, salt);
+  hashPass(pass.c_str(), hashedInput, salt);
 
   if (secureEquals(hashedInput, savedPass, 16)) {
     loginFailCount = 0;

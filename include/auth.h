@@ -14,7 +14,8 @@ extern uint8_t loginFailCount;
 extern bool isLockedOut;
 extern char whitelistIP[16];
 
-void hashPass(const char *input, char *output);
+void hashPass(const char *input, char *output, const uint8_t *salt);
+void generateNewSalt(uint8_t *salt);
 bool secureEquals(const char *a, const char *b, size_t len);
 bool checkWebAuth(String pass, IPAddress remoteIp);
 bool isIpAllowed(IPAddress ip);

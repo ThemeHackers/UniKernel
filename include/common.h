@@ -7,8 +7,8 @@
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 #define MAX_FILES 16
 #define CONTENT_LEN 128
-#define DMESG_LINES 10
-#define MAX_INPUT_LEN 192
+#define DMESG_LINES 6
+#define MAX_INPUT_LEN 256
 #define MAX_TASKS 6
 #else
 #define MAX_FILES 4
@@ -57,6 +57,7 @@ extern bool isSerialSession;
 extern char whitelistIP[16];
 extern unsigned long lastLoginAttempt;
 extern unsigned long loginCooldown;
+extern bool needsSetup;
 
 typedef struct {
     unsigned long timestamp;
@@ -135,14 +136,14 @@ void addDmesg(const char *msg);
 void safeConcatPath(char *base, const char *extra);
 
 extern int shellDepth;
-extern const char *CLR_RED;
-extern const char *CLR_GRN;
-extern const char *CLR_YLW;
-extern const char *CLR_BLU;
-extern const char *CLR_MAG;
-extern const char *CLR_CYN;
-extern const char *CLR_WHT;
-extern const char *CLR_RST;
+extern const char CLR_RED[];
+extern const char CLR_GRN[];
+extern const char CLR_YLW[];
+extern const char CLR_BLU[];
+extern const char CLR_MAG[];
+extern const char CLR_CYN[];
+extern const char CLR_WHT[];
+extern const char CLR_RST[];
 
 void printPermissions(uint16_t m, bool isDir);
 int freeMemory();

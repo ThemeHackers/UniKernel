@@ -470,7 +470,7 @@ async def handle_unikernel(websocket):
             try:
                 old_info = ACTIVE_CLIENTS[ip]
                 old_ws = old_info["ws"]
-                if hasattr(old_ws, 'closed') and not old_ws.closed:
+                if getattr(old_ws, "open", True) if not hasattr(old_ws, "closed") else not old_ws.closed:
                     console.print(f"[bold yellow][System][/bold yellow] Terminating stale connection for {ip}")
                   
             except Exception as e:
@@ -480,14 +480,19 @@ async def handle_unikernel(websocket):
     old_ws_to_close = None
     with CLIENTS_LOCK:
         if ip in ACTIVE_CLIENTS:
-            old_info = ACTIVE_CLIENTS[ip]
-            if hasattr(old_info["ws"], 'close') and not old_info["ws"].closed:
-                old_ws_to_close = old_info["ws"]
+            ws = old_info["ws"]
+
+            is_open = getattr(ws, "open", True)
+            if hasattr(ws, "closed"): is_open = not ws.closed
+            
+            if is_open and hasattr(ws, 'close'):
+                old_ws_to_close = ws
 
     if old_ws_to_close:
         try:
             await old_ws_to_close.close(1001, "New connection replacing old one")
-        except: pass
+        except Exception as e:
+            logging.debug(f"Failed to close old websocket: {e}")
 
     with CLIENTS_LOCK:
         ACTIVE_CLIENTS[ip] = {
@@ -505,8 +510,8 @@ async def handle_unikernel(websocket):
             arr = np.frombuffer(resp_bytes, dtype=np.uint8)
             xor_bytes = (arr ^ 0x5A).tobytes()
             await websocket.send(xor_bytes)
-        except:
-            pass
+        except Exception as e:
+            logging.debug(f"Websocket send failed: {e}")
         
     try:
        

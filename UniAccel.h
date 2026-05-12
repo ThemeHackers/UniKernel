@@ -21,13 +21,14 @@ extern bool accelChatMode;
 extern char currentModelName[32];
 extern bool accelModelLoaded;
 
-extern const char* CLR_RST;
-extern const char* CLR_RED;
-extern const char* CLR_GRN;
-extern const char* CLR_YLW;
-extern const char* CLR_BLU;
-extern const char* CLR_MAG;
-extern const char* CLR_CYN;
+extern const char CLR_RST[];
+extern const char CLR_RED[];
+extern const char CLR_GRN[];
+extern const char CLR_YLW[];
+extern const char CLR_BLU[];
+extern const char CLR_MAG[];
+extern const char CLR_CYN[];
+extern const char CLR_WHT[];
 
 void initUniAccel();
 void loopUniAccel();
