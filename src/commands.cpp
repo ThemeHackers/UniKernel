@@ -404,7 +404,7 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       return;
     }
     if (strcmp(args, "temp") == 0 || strstr(args, "temp")) {
-      // Simulate temperature with slight variation
+
       kprintln(25 + (millis() % 5));
       return;
     }
@@ -425,6 +425,20 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       kprintln(vfs[idx].content);
     }
   } else {
+    
+    String path = args;
+    if (!path.startsWith("/")) path = "/" + path;
+    if (LittleFS.exists(path)) {
+      File f = LittleFS.open(path, "r");
+      if (f) {
+        while (f.available()) {
+          kprint((char)f.read());
+        }
+        f.close();
+        kprintln();
+        return;
+      }
+    }
     sendResponse(false, 404, "File not found");
   }
 }
@@ -1299,12 +1313,12 @@ void handle_env(char *args, bool fromSerial) {
     kprintln(F("--- Environment Variables ---"));
     kprintColor(CLR_RST);
     
-    // System Auto-Variables
+
     kprint(F("VCC=")); kprintln(ESP.getVcc());
     kprint(F("RAM=")); kprintln(freeMemory());
     kprint(F("TEMP=")); kprintln(25 + (int)(millis() % 5));
     
-    // User Variables
+
     for (int i = 0; i < MAX_ENV; i++) {
       if (envTable[i].active) {
         kprint(envTable[i].key);
@@ -1493,9 +1507,11 @@ void handle_lfs(char *args, bool fromSerial) {
     if (fromSerial) {
       kprintln(F("LittleFS Utilities:"));
       kprintln(F("  lfs ls      - List files in LittleFS"));
+      kprintln(F("  lfs cat <F> - Display file contents"));
+      kprintln(F("  lfs rm <F>  - Delete a file"));
       kprintln(F("  lfs format  - Format LittleFS partition"));
     } else {
-      sendResponse(false, 400, "Usage: lfs [ls|format]");
+      sendResponse(false, 400, "Usage: lfs [ls|cat|rm|format]");
     }
     return;
   }
@@ -1518,8 +1534,32 @@ void handle_lfs(char *args, bool fromSerial) {
 #else
     sendResponse(false, 501, "Not implemented for ESP32 yet");
 #endif
+  } else if (strncmp(args, "cat ", 4) == 0) {
+    char *filename = kTrim(args + 4);
+    String path = filename;
+    if (!path.startsWith("/")) path = "/" + path;
+    File f = LittleFS.open(path, "r");
+    if (f) {
+      while (f.available()) {
+        kprint((char)f.read());
+      }
+      f.close();
+      kprintln();
+      if (!fromSerial) sendResponse(true, 200, "OK");
+    } else {
+      sendResponse(false, 404, "File not found in LittleFS");
+    }
+  } else if (strncmp(args, "rm ", 3) == 0) {
+    char *filename = kTrim(args + 3);
+    String path = filename;
+    if (!path.startsWith("/")) path = "/" + path;
+    if (LittleFS.remove(path)) {
+      sendResponse(true, 200, "File removed from LittleFS");
+    } else {
+      sendResponse(false, 404, "File not found");
+    }
   } else {
-    sendResponse(false, 400, "Usage: lfs [ls|format]");
+    sendResponse(false, 400, "Usage: lfs [ls|cat|rm|format]");
   }
 }
 
@@ -2056,7 +2096,7 @@ void handle_recovery(char *args, bool fromSerial) {
   } else if (strcmp(args, "reset") == 0) {
     needsSetup = true;
     serialAuthenticated = true;
-    EEPROM.write(EEPROM_PASS_ADDR, 0); // Clear first byte of pass
+    EEPROM.write(EEPROM_PASS_ADDR, 0);
     EEPROM.commit();
     sendResponse(true, 200, "Factory Reset: Password cleared. Please setup.");
     addDmesg(F("Recovery: Factory Reset triggered"));
