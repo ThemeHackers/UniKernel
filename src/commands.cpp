@@ -178,6 +178,8 @@ ICACHE_FLASH_ATTR void registerCommands() {
   commandTable.emplace_back("boot", handle_boot, true, "Boot configuration");
   commandTable.emplace_back("waitwifi", handle_waitwifi, false,
                             "Wait for WiFi connection");
+  commandTable.emplace_back("recovery", handle_recovery, true,
+                            "System recovery tools");
 }
 
 bool isSerialSession = true;
@@ -388,10 +390,12 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
     kprintln(target);
     return;
   }
-  if (strcmp(currentPath, "/dev/") == 0) {
+  if (strcmp(currentPath, "/dev/") == 0 || strcmp(args, "dev/vcc") == 0 || strcmp(args, "/dev/vcc") == 0 ||
+      strcmp(args, "dev/temp") == 0 || strcmp(args, "/dev/temp") == 0 ||
+      strcmp(args, "dev/led") == 0 || strcmp(args, "/dev/led") == 0) {
     if (strcmp(args, "null") == 0)
       return;
-    if (strcmp(args, "led") == 0) {
+    if (strcmp(args, "led") == 0 || strstr(args, "led")) {
       kprintln(digitalRead(LED_BUILTIN) == LOW ? "1" : "0");
       return;
     }
@@ -399,11 +403,12 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       kprintln(analogRead(args[1] - '0'));
       return;
     }
-    if (strcmp(args, "temp") == 0) {
+    if (strcmp(args, "temp") == 0 || strstr(args, "temp")) {
+      // Simulate temperature with slight variation
       kprintln(25 + (millis() % 5));
       return;
     }
-    if (strcmp(args, "vcc") == 0) {
+    if (strcmp(args, "vcc") == 0 || strstr(args, "vcc")) {
       kprintln(ESP.getVcc());
       return;
     }
@@ -1289,13 +1294,23 @@ void handle_alias(char *args, bool fromSerial) {
 }
 
 void handle_env(char *args, bool fromSerial) {
-  if (strcmp(args, "help") == 0) {
-    if (fromSerial) {
-      kprintln(F("Environment Commands:"));
-      kprintln(F("  env             - List all environment variables"));
-      kprintln(F("  export key=val  - Set environment variable"));
-    } else {
-      sendResponse(false, 400, "Usage: env or export key=val");
+  if (fromSerial) {
+    kprintColor(CLR_CYN);
+    kprintln(F("--- Environment Variables ---"));
+    kprintColor(CLR_RST);
+    
+    // System Auto-Variables
+    kprint(F("VCC=")); kprintln(ESP.getVcc());
+    kprint(F("RAM=")); kprintln(freeMemory());
+    kprint(F("TEMP=")); kprintln(25 + (int)(millis() % 5));
+    
+    // User Variables
+    for (int i = 0; i < MAX_ENV; i++) {
+      if (envTable[i].active) {
+        kprint(envTable[i].key);
+        kprint(F("="));
+        kprintln(envTable[i].val);
+      }
     }
     return;
   }
@@ -1303,6 +1318,8 @@ void handle_env(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
   JsonObject obj = data.to<JsonObject>();
+  obj["VCC"] = ESP.getVcc();
+  obj["RAM"] = freeMemory();
   for (int i = 0; i < MAX_ENV; i++) {
     if (envTable[i].active) {
       obj[envTable[i].key] = envTable[i].val;
@@ -2018,6 +2035,41 @@ void handle_cron(char *args, bool fromSerial) {
   sendResponse(true, 200, "Cron Table Empty");
 }
 
-void handle_bg(char *args, bool fromSerial) {
-  sendResponse(true, 200, "Task moved to background");
+void handle_recovery(char *args, bool fromSerial) {
+  if (!fromSerial) {
+    sendResponse(false, 403, "Recovery only allowed via Serial");
+    return;
+  }
+
+  if (strcmp(args, "unlock") == 0) {
+    loginFailCount = 0;
+    isLockedOut = false;
+    EEPROM.write(EEPROM_FAIL_COUNT_ADDR, 0);
+    EEPROM.write(EEPROM_LOCKOUT_ADDR, 0);
+    EEPROM.commit();
+    sendResponse(true, 200, "System Unlocked");
+    addDmesg(F("Recovery: System Unlocked via command"));
+  } else if (strcmp(args, "reset") == 0) {
+    needsSetup = true;
+    serialAuthenticated = true;
+    EEPROM.write(EEPROM_PASS_ADDR, 0); // Clear first byte of pass
+    EEPROM.commit();
+    sendResponse(true, 200, "Factory Reset: Password cleared. Please setup.");
+    addDmesg(F("Recovery: Factory Reset triggered"));
+  } else if (strcmp(args, "purge") == 0) {
+    for (int i = 0; i < 16; i++) {
+      if (vfs[i].flags & FLAG_ACTIVE) {
+        if (!(vfs[i].flags & FLAG_ISDIR)) {
+            vfs[i].flags &= ~FLAG_ACTIVE;
+        }
+      }
+    }
+    sendResponse(true, 200, "VFS Purged (Files deleted, Dirs kept)");
+    addDmesg(F("Recovery: VFS Purged"));
+  } else {
+    kprintln(F("Recovery Commands:"));
+    kprintln(F("  recovery unlock  - Reset login failures"));
+    kprintln(F("  recovery reset   - Clear password (Factory Reset)"));
+    kprintln(F("  recovery purge   - Delete all files in VFS"));
+  }
 }

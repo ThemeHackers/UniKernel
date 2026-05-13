@@ -746,13 +746,58 @@ ICACHE_FLASH_ATTR void preventiveMemoryCleanup() {
 
 ICACHE_FLASH_ATTR void logResetReason() {
   String reason = ESP.getResetReason();
+  int vcc = ESP.getVcc();
+
   File f = LittleFS.open("/crash.log", "a");
   if (f) {
-    f.print("[");
-    f.print(millis() / 1000);
-    f.print("] Reset: ");
-    f.println(reason);
-    f.close();
+    if (f.size() > 5120) {
+      f.close();
+      File f2 = LittleFS.open("/crash.log", "w");
+      if (f2) {
+        f2.println(F("--- Log Rotated ---"));
+        f2.close();
+      }
+      f = LittleFS.open("/crash.log", "a");
+    }
+
+    if (f) {
+      f.print("[");
+      f.print(millis() / 1000);
+      f.print("] Reset: ");
+      f.print(reason);
+      f.print(" | VCC: ");
+      f.print(vcc);
+      f.println("mV");
+      f.close();
+    }
+  }
+
+  int idx = findFile("crash.log", "/sys");
+  if (idx == -1) {
+    for (int i = 0; i < 16; i++) {
+      if (!(vfs[i].flags & FLAG_ACTIVE)) {
+        idx = i;
+        strcpy(vfs[idx].name, "crash.log");
+        strcpy(vfs[idx].parentDir, "/sys");
+        vfs[idx].flags = FLAG_ACTIVE;
+        vfs[idx].mode = 0444;
+        vfs[idx].ownerId = 0;
+        break;
+      }
+    }
+  }
+
+  if (idx != -1) {
+    File f = LittleFS.open("/crash.log", "r");
+    if (f) {
+      size_t s = f.size();
+      if (s > CONTENT_LEN - 1) {
+        f.seek(s - (CONTENT_LEN - 1));
+      }
+      f.read((uint8_t *)vfs[idx].content, CONTENT_LEN - 1);
+      vfs[idx].content[f.available()] = '\0';
+      f.close();
+    }
   }
 }
 
@@ -1664,9 +1709,10 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     kprintln(F("sh: max recursion depth reached"));
     return;
   }
-  
-  char *scriptLine = (char*)malloc(MAX_INPUT_LEN);
-  if (!scriptLine) return;
+
+  char *scriptLine = (char *)malloc(MAX_INPUT_LEN);
+  if (!scriptLine)
+    return;
   shellDepth++;
 
   int ci = 0, li = 0, lineNum = 0;

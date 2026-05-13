@@ -87,5 +87,6 @@ void handle_cron(char *args, bool fromSerial);
 void handle_bg(char *args, bool fromSerial);
 void handle_chat(char *args, bool fromSerial);
 void handle_waitwifi(char *args, bool fromSerial);
+void handle_recovery(char *args, bool fromSerial);
 
 #endif
