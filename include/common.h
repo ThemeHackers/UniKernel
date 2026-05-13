@@ -107,13 +107,17 @@ typedef struct CommandDef {
         : name(n), handler(h), authRequired(a), help(hlp) {}
 } CommandDef;
 
+void kprint(char c);
 void kprint(const char *s);
+void kprint(String s);
 void kprint(const __FlashStringHelper *s);
 void kprint(int n);
 void kprint(unsigned int n);
 void kprint(long n);
 void kprint(unsigned long n);
+void kprintln(char c);
 void kprintln(const char *s);
+void kprintln(String s);
 void kprintln(const __FlashStringHelper *s);
 void kprintln(int n);
 void kprintln(unsigned int n);

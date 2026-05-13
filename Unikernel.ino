@@ -559,6 +559,11 @@ void kprint(String s) { kprint(s.c_str()); }
 
 void kprintln(String s) { kprintln(s.c_str()); }
 
+void kprintln(char c) {
+  kprint(c);
+  kprintln();
+}
+
 ICACHE_FLASH_ATTR void kprintln(const char *s) {
   kprint(s);
   kprintln();
