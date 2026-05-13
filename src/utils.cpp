@@ -1,6 +1,8 @@
 #include "../include/common.h"
+#include "../include/shell.h"
+#include "../UniAccel.h"
 
-char *kTrim(char *s) {
+ICACHE_FLASH_ATTR char *kTrim(char *s) {
     if (!s) return s;
     while (isspace((unsigned char)*s)) s++;
     if (*s == 0) return s;
@@ -10,7 +12,7 @@ char *kTrim(char *s) {
     return s;
 }
 
-int kParseArgs(char *line, char **argv, int maxArgs) {
+ICACHE_FLASH_ATTR int kParseArgs(char *line, char **argv, int maxArgs) {
     int argc = 0;
     char *p = line;
     bool inQuote = false;
@@ -39,7 +41,7 @@ int kParseArgs(char *line, char **argv, int maxArgs) {
     return argc;
 }
 
-void stripQuotes(char *s) {
+ICACHE_FLASH_ATTR void stripQuotes(char *s) {
     if (!s) return;
     char *start = s;
     while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')
@@ -61,7 +63,7 @@ void stripQuotes(char *s) {
     }
 }
 
-void toLowercase(char *s) {
+ICACHE_FLASH_ATTR void toLowercase(char *s) {
     if (!s) return;
     for (int i = 0; s[i]; i++) {
         s[i] = tolower(s[i]);
@@ -82,7 +84,7 @@ void safeStrncat(char *dest, const char *src, size_t n) {
     dest[n - 1] = '\0';
 }
 
-int atoi_safe(const char *s) {
+ICACHE_FLASH_ATTR int atoi_safe(const char *s) {
     if (!s || !*s) return 0;
     while (*s == ' ') s++;
     if (!isdigit(*s) && *s != '-' && *s != '+') return 0;
@@ -96,11 +98,11 @@ int indexOf(const char *s, const char *target) {
     return -1;
 }
 
-void sendResponse(bool ok, int code, const char *message, JsonDocument *data) {
+ICACHE_FLASH_ATTR void sendResponse(bool ok, int code, const char *message, JsonDocument *data) {
     if (!ok) {
-        kprintColor("\033[1;31m");
+        kprintColor_P(CLR_RED);
         kprint("[ERROR] ");
-        kprintColor("\033[0m");
+        kprintColor_P(CLR_RST);
         kprintln(message);
     } else {
         if (strlen(message) > 0 && strcmp(message, "OK") != 0 && strcmp(message, "Commands List") != 0) {
@@ -149,9 +151,15 @@ void sendResponse(bool ok, int code, const char *message, JsonDocument *data) {
         serializeJson(doc, Serial);
         Serial.println();
     }
+
+    const char* proxyMaster = getEnv("PROXY_MASTER");
+    if (proxyMaster && proxyMaster[0] != '\0') {
+        extern void sendProxyData(const char* target, const char* msg);
+        sendProxyData(proxyMaster, message);
+    }
 }
 
-void safeConcatPath(char *base, const char *extra) {
+ICACHE_FLASH_ATTR void safeConcatPath(char *base, const char *extra) {
     if (strcmp(extra, "..") == 0) {
         char *lastSlash = strrchr(base, '/');
         if (lastSlash && lastSlash != base) {

@@ -19,7 +19,7 @@ bool isIpAllowed(IPAddress ip) {
     return ip.toString() == String(whitelistIP);
 }
 
-void hashPass(const char *input, char *output, const uint8_t *salt) {
+ICACHE_FLASH_ATTR void hashPass(const char *input, char *output, const uint8_t *salt) {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   uint8_t currentHash[32];
   br_sha256_context ctx;
@@ -67,13 +67,13 @@ void hashPass(const char *input, char *output, const uint8_t *salt) {
 #endif
 }
 
-void generateNewSalt(uint8_t *salt) {
+ICACHE_FLASH_ATTR void generateNewSalt(uint8_t *salt) {
     for (int i = 0; i < PASS_SALT_LEN; i++) {
         salt[i] = (uint8_t)os_random() % 256;
     }
 }
 
-bool secureEquals(const char *a, const char *b, size_t len) {
+ICACHE_FLASH_ATTR bool secureEquals(const char *a, const char *b, size_t len) {
   uint8_t diff = 0;
   for (size_t i = 0; i < len; i++) {
     diff |= ((uint8_t)a[i]) ^ ((uint8_t)b[i]);

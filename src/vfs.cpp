@@ -5,7 +5,7 @@ char currentPath[PATH_LEN] = "/";
 
 void initFS() {
     memset(vfs, 0, sizeof(vfs));
-    const char *sysDirs[] = {"home", "dev", "sys", "bin"};
+    const char *sysDirs[] = {"home", "dev", "sys", "bin", "mnt/host"};
     int dirsCreated = 0;
 
 

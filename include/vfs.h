@@ -7,8 +7,8 @@ typedef struct {
   char name[NAME_LEN];
   char content[CONTENT_LEN];
   char parentDir[PATH_LEN];
-  uint8_t flags;
   uint16_t mode;
+  uint8_t flags;
   uint8_t ownerId;
 } RAMFile;
 

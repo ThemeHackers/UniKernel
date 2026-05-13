@@ -59,33 +59,34 @@ extern unsigned long loginCooldown;
 extern bool needsSetup;
 
 typedef struct {
-    unsigned long timestamp;
+    uint32_t timestamp;
     char message[DMESG_LEN];
 } DmesgEntry;
 
 #define MAX_TRIGS 4
 typedef struct {
+    int16_t val;
     char cond[16];
-    int val;
-    char op;
     char action[32];
+    char op;
     bool active;
 } Trigger;
 
 #define MAX_CRON 4
 typedef struct {
-    uint8_t h, m;
     char cmd[32];
+    uint8_t h;
+    uint8_t m;
     bool active;
 } CronEntry;
 
 typedef struct {
     void (*func)(void);
-    unsigned long interval;
-    unsigned long lastRun;
-    bool active;
+    uint32_t interval;
+    uint32_t lastRun;
+    uint32_t executionCount;
     char name[NAME_LEN];
-    unsigned long executionCount;
+    bool active;
 } Task;
 
 extern DmesgEntry dmesg[DMESG_LINES];

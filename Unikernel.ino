@@ -1664,8 +1664,9 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     kprintln(F("sh: max recursion depth reached"));
     return;
   }
-  static char scriptBuffers[MAX_SHELL_DEPTH][MAX_INPUT_LEN];
-  char *scriptLine = scriptBuffers[shellDepth];
+  
+  char *scriptLine = (char*)malloc(MAX_INPUT_LEN);
+  if (!scriptLine) return;
   shellDepth++;
 
   int ci = 0, li = 0, lineNum = 0;
@@ -1689,6 +1690,7 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
       scriptLine[li++] = c;
     }
   }
+  free(scriptLine);
   shellDepth--;
 }
 ICACHE_FLASH_ATTR void taskBlink() {
