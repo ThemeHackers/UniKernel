@@ -180,24 +180,31 @@ Access your dashboard at `http://[ESP_IP]`. The Pro Dashboard includes real-time
 
 UniAccel is a distributed computing engine that offloads heavy mathematical and security tasks from the microcontroller to a powerful GPU Host (via `UniAccelHost.py`).
 
-### 7.1 UniAccel Command Reference
+### 7.1 Unified UniAccel Command Suite
 | Command | Usage | Description |
 | :--- | :--- | :--- |
-| `accel connect` | `accel connect [IP] [Port]` | Connect to a GPU Host (Default port: 81). |
-| `accel discover` | `accel discover` | Auto-discover Host via **mDNS (Zeroconf)**. |
-| `accel load`     | `accel load [model]`        | Pre-load an AI model (e.g., `TinyLlama/TinyLlama-1.1B-Chat-v1.0`) into GPU VRAM. |
-| `accel research` | `accel research crack [hash] [s] [r]` | Parallel Brute-force Hash Cracking (MurmurMix). |
-| `accel research` | `accel research rsa` | RSA-2048 high-speed modular exponentiation. |
-| `accel encrypt` | `accel encrypt [text] [key]` | Offload complex XOR/Rotate/Shift encryption to GPU. |
-| `accel bench` | `accel bench` | Run a **5-stage GPU Performance Analysis**. |
-| `accel physics` | `accel physics` | Start **N-Body Gravity Simulation** (ASCII Visual). |
-| `accel signal` | `accel signal` | GPU-Accelerated **FFT Signal Analysis**. |
-| `accel cluster` | `accel cluster` | View all **Connected Cluster Nodes** metadata. |
-| `accel status` | `accel status` | View connection state and real-time **GPU Telemetry**. |
-| `accel swap`   | `accel swap out/in [key] [val]` | Offload/retrieve data to **Virtual Swap RAM** on Host. |
-| `accel mount`  | `accel mount [path]` | **UniFS Remote Mounting**: Access files from Host `remote_fs`. |
-| `accel pipe`   | `accel pipe [model] [data]` | **Edge-AI Pipeline**: Stream data for remote model processing. |
-| `accel disconnect`| `accel disconnect` | Close the link to the accelerator host. |
+| **System** | | |
+| `accel connect` | `accel connect [IP] [Port]` | Establish link to GPU/Cluster Host (Default port: 81). |
+| `accel status`  | `accel status`              | Real-time GPU & Cluster Node Telemetry. |
+| `accel discover`| `accel discover`            | Auto-detect Host using mDNS (Zero-config). |
+| **Cluster** | | |
+| `accel nodes`   | `accel nodes`               | **Node Scan**: List all active nodes in the ring. |
+| `accel health`  | `accel health`              | **Health Check**: Global resource map (RAM/CPU/Load). |
+| `accel sync`    | `accel sync [file]`         | **Global Sync**: Propagate a local file to all nodes. |
+| `accel rexec`   | `accel rexec [IP/all] [cmd]`| **Remote Exec**: Run commands on another node. |
+| `accel broadcast`| `accel broadcast [msg]`    | **Global Alert**: Send a message to all node terminals. |
+| `accel migrate` | `accel migrate [IP] [task]` | **Workload Shift**: Move a running process to another node. |
+| `accel proxy`   | `accel proxy [IP]`          | **Tunneling**: Enter a remote node's shell session. |
+| **AI / Compute** | | |
+| `accel chat`    | `accel chat`                | Enter interactive **Agentic AI Mode** (Neural UI). |
+| `accel ask`     | `accel ask [prompt]`        | Direct AI Query: Get answers from the Neural Engine. |
+| `accel load`    | `accel load [model]`        | VRAM Pre-loading: Prepare specific AI models. |
+| `accel bench`   | `accel bench`               | Performance Analysis: 5-stage GPU/Memory benchmark. |
+| **Data Storage** | | |
+| `accel kvset`   | `accel kvset <k> <v>`       | **Global RAM**: Store data in cluster-wide memory. |
+| `accel kvget`   | `accel kvget <k>`           | **Global RAM**: Retrieve data from cluster memory. |
+| `accel swap`    | `accel swap out/in [key]`   | **Virtual RAM**: Offload local buffers to Host VRAM. |
+| `accel mount`   | `accel mount [path]`        | **UniFS Remote**: Map Host folders as local VFS paths. |
 
 ### 7.2 Advanced GPU Kernels
 The UniAccel engine leverages CUDA kernels for extreme throughput:

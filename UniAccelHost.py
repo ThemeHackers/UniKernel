@@ -28,6 +28,13 @@ from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
+SESSION_KEY = bytes([0x5A, 0xA5, 0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66])
+
+def secure_crypt(data):
+    arr = np.frombuffer(data, dtype=np.uint8).copy()
+    for i in range(len(arr)):
+        arr[i] ^= SESSION_KEY[i % 16]
+    return arr.tobytes()
 
 
 def setup_environment():
@@ -76,6 +83,8 @@ current_hf_model = None
 stop_requested = False
 PARTICLE_STATES = {}
 SWAP_STORE = {}
+CLUSTER_KV = {}
+CLUSTER_KV_LOCK = threading.Lock()
 MOUNT_DIR = os.path.join(os.path.expanduser("~"), ".unifs")
 
 if not os.path.exists(MOUNT_DIR):
@@ -183,16 +192,148 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
         if ALLOW_GPU_INJECT:
             allowed_cmds.append("gpu_inject")
 
-        if cmd == "gpu_cluster_list":
+        if cmd == "gpu_cluster_list" or cmd == "cluster_list":
             nodes = []
             with CLIENTS_LOCK:
                 for node_ip, info in ACTIVE_CLIENTS.items():
                     nodes.append({"ip": node_ip, "req": info["requests"], "uptime": int(time.time() - info["connected_at"])})
             dashboard_url = f"http://{get_primary_ip()}:8080"
-            res = {"status": "ok", "cmd": "gpu_cluster_list", "data": nodes, "kernel": "cluster_list", "dashboard": dashboard_url}
+            res = {"status": "ok", "cmd": "cluster_list", "nodes": nodes, "dashboard": dashboard_url}
+            if current_hf_model:
+                res["model_id"] = current_hf_model["id"]
             res["telemetry"] = get_telemetry()
             res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
             asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
+            return
+
+        if cmd == "cluster_top":
+            nodes = []
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    nodes.append({
+                        "ip": ip, 
+                        "heap": info.get("heap", 0),
+                        "uptime": int(time.time() - info["connected_at"]),
+                        "reqs": info["requests"]
+                    })
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "cluster_top", "nodes": nodes}), loop)
+            return
+
+        if cmd == "cluster_sync":
+            path = req.get("path")
+            data = req.get("data")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    if ip != sender_ip:
+                        payload = msgpack.packb({"status": "info", "cmd": "fs_sync", "path": path, "data": data}, use_bin_type=True)
+                        asyncio.run_coroutine_threadsafe(info["ws"].send(secure_crypt(payload)), loop)
+
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": f"Synced {path} to cluster"}), loop)
+            return
+
+        if cmd == "proxy_req":
+            target = req.get("target")
+            data = req.get("data", "")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                if target in ACTIVE_CLIENTS:
+                    payload = msgpack.packb({"status": "info", "cmd": "proxy_in", "from": sender_ip, "data": data}, use_bin_type=True)
+                    asyncio.run_coroutine_threadsafe(ACTIVE_CLIENTS[target]["ws"].send(secure_crypt(payload)), loop)
+            return
+
+        if (cmd == "node_fs_req"):
+            target = req.get("target")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                if target in ACTIVE_CLIENTS:
+                    payload = msgpack.packb({
+                        "status": "info", 
+                        "cmd": "node_fs_req", 
+                        "from": sender_ip,
+                        "path": req.get("path"),
+                        "action": req.get("action") 
+                    }, use_bin_type=True)
+                    asyncio.run_coroutine_threadsafe(ACTIVE_CLIENTS[target]["ws"].send(secure_crypt(payload)), loop)
+            return
+
+        if (cmd == "node_fs_res"):
+            target = req.get("target") 
+            with CLIENTS_LOCK:
+                if target in ACTIVE_CLIENTS:
+                    payload = msgpack.packb({
+                        "status": "ok",
+                        "cmd": "node_fs_data",
+                        "path": req.get("path"),
+                        "data": req.get("data"),
+                        "files": req.get("files")
+                    }, use_bin_type=True)
+                    asyncio.run_coroutine_threadsafe(ACTIVE_CLIENTS[target]["ws"].send(secure_crypt(payload)), loop)
+            return
+
+        if cmd == "cluster_exec":
+            target = req.get("target") 
+            exec_cmd = req.get("exec")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    if target == "all" or target == ip:
+                        if ip != sender_ip:
+                            payload = msgpack.packb({"status": "info", "cmd": "remote_exec", "from": sender_ip, "exec_cmd": exec_cmd}, use_bin_type=True)
+                            asyncio.run_coroutine_threadsafe(info["ws"].send(secure_crypt(payload)), loop)
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": f"Command sent to {target}"}), loop)
+            return
+
+        if cmd == "proxy_out":
+            target = req.get("target")
+            data = req.get("data")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                if target in ACTIVE_CLIENTS:
+                    payload = msgpack.packb({"status": "info", "cmd": "proxy_data", "from": sender_ip, "data": data}, use_bin_type=True)
+                    asyncio.run_coroutine_threadsafe(ACTIVE_CLIENTS[target]["ws"].send(secure_crypt(payload)), loop)
+            return
+
+        if cmd == "heartbeat":
+            with CLIENTS_LOCK:
+                ip = addr.split(":")[0]
+                if ip in ACTIVE_CLIENTS:
+                    ACTIVE_CLIENTS[ip]["heap"] = req.get("heap", 0)
+                    if req.get("alert") == "LOW_RAM_OVERLOAD":
+                        print(f"!! ALERT: Node {ip} is reporting CRITICAL RAM OVERLOAD ({req.get('heap')} bytes free)")
+            return
+
+        if cmd == "broadcast":
+            data = req.get("data")
+            sender_ip = addr.split(":")[0]
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    if ip != sender_ip:
+                        payload = msgpack.packb({"status": "info", "cmd": "cluster_msg", "from": sender_ip, "data": data}, use_bin_type=True)
+                        asyncio.run_coroutine_threadsafe(info["ws"].send(secure_crypt(payload)), loop)
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": "Message broadcasted"}), loop)
+            return
+
+        if cmd == "cluster_kv_set":
+            key = req.get("key")
+            val = req.get("val")
+            sender_ip = addr.split(":")[0]
+            with CLUSTER_KV_LOCK:
+                CLUSTER_KV[key] = val
+         
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    if ip != sender_ip:
+                        payload = msgpack.packb({"status": "info", "cmd": "kv_update", "key": key, "val": val}, use_bin_type=True)
+                        asyncio.run_coroutine_threadsafe(info["ws"].send(secure_crypt(payload)), loop)
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "kv_ack", "key": key}), loop)
+            return
+
+        if cmd == "cluster_kv_get":
+            key = req.get("key")
+            with CLUSTER_KV_LOCK:
+                val = CLUSTER_KV.get(key, "NULL")
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "kv_data", "key": key, "val": val}), loop)
             return
 
         if cmd in allowed_cmds:
@@ -262,6 +403,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                         "atomic_ms": round(at_ms, 4),
                         "launch_lat_us": round(null_ms * 1000, 2)
                     }
+                    del s_evt, e_evt
 
                 elif cmd == "gpu_encrypt":
                     text = req.get("text", "")
@@ -327,6 +469,7 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 res["compute_ms"] = round((time.time() - start_time) * 1000, 2)
                 asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
             finally:
+                if 'stream' in locals(): del stream
                 cuda_ctx.pop()
 
         elif cmd == "load_hf":
@@ -338,13 +481,31 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
                 device = "cuda:0" if torch.cuda.is_available() else "cpu"
                 console.print(f"[bold yellow][HF][/bold yellow] Loading: [cyan]{model_id}[/cyan] on [bold green]{device.upper()}[/bold green]...")
+               
                 asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "info", "message": "Step 1/3: Fetching config & tokenizer..."}), loop)
-                tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=lfo, token=hft)
-                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "info", "message": "Step 2/3: Loading weights (this may take a while)..."}), loop)
-                model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", dtype=torch.float16 if device == "cuda:0" else torch.float32, local_files_only=lfo, token=hft)
-                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "info", "message": "Step 3/3: Initializing inference pipeline..."}), loop)
-                current_hf_model = {"pipeline": pipeline("text-generation", model=model, tokenizer=tokenizer, dtype=torch.float16 if device == "cuda:0" else torch.float32), "tokenizer": tokenizer, "model": model, "id": model_id}
-                res = {"status": "ok", "message": f"Model {model_id} is now ONLINE.", "telemetry": get_telemetry()}
+                tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=lfo, token=hft, trust_remote_code=True)
+                
+           
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "info", "message": "Step 2/3: Loading weights (low_cpu_mem mode)..."}), loop)
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_id, 
+                    device_map="auto", 
+                    torch_dtype=torch.float16 if device == "cuda:0" else torch.float32, 
+                    local_files_only=lfo, 
+                    token=hft,
+                    low_cpu_mem_usage=True,
+                    trust_remote_code=True
+                )
+                
+
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "info", "message": "Step 3/3: Initializing inference..."}), loop)
+                current_hf_model = {
+                    "pipeline": pipeline("text-generation", model=model, tokenizer=tokenizer), 
+                    "tokenizer": tokenizer, 
+                    "model": model, 
+                    "id": model_id
+                }
+                res = {"status": "ok", "cmd": "load_hf", "model_id": model_id, "message": f"Model {model_id} is now ONLINE.", "telemetry": get_telemetry()}
                 asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
             except Exception as e:
                 msg = str(e)
@@ -433,7 +594,14 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
             except Exception: pass
 
             if not is_ws_closed:
+               
+                import re
+                commands_to_exec = re.findall(r'\[EXEC:\s*(.*?)\]', full_response)
+                
                 end_pkt = {"status": "ok", "cmd": "ask_end", "full_data": full_response, "telemetry": get_telemetry()}
+                if commands_to_exec:
+                    end_pkt["exec_cmd"] = commands_to_exec[0]
+                
                 asyncio.run_coroutine_threadsafe(websocket_send_func(end_pkt), loop)
 
         elif cmd == "hf_token":
@@ -507,24 +675,20 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 with open(safe_path, "w", encoding="utf-8") as f: f.write(data)
                 asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": f"Saved to {path}"}), loop)
 
-        elif cmd == "edge_pipe":
-            model = req.get("model", "default")
-            input_data = req.get("data", "")
-            on_match = req.get("on_match", None)
-            
-            # More flexible AI processing simulation
-            console.print(f"[bold magenta][PIPE][/bold magenta] Model: [cyan]{model}[/cyan] | Data: [dim]{len(input_data)} bytes[/dim]")
-            
-            # Logic simulation: if "alert" in data, trigger callback
-            match_found = "alert" in input_data.lower()
-            res_msg = f"[EdgeAI:{model}] Result: {'MATCH' if match_found else 'NOMATCH'}"
-            
             asyncio.run_coroutine_threadsafe(websocket_send_func({
                 "status": "ok", 
                 "cmd": "edge_result", 
                 "data": res_msg, 
                 "callback": on_match if match_found else None
             }), loop)
+
+        elif cmd == "cluster_list":
+            nodes = []
+            with CLIENTS_LOCK:
+                for ip, info in ACTIVE_CLIENTS.items():
+                    nodes.append({"ip": ip, "uptime": int(time.time() - info["connected_at"]), "reqs": info["requests"]})
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "cluster_list", "nodes": nodes}), loop)
+
     except Exception as e:
         msg = str(e)
         if "403" in msg or "gated" in msg.lower():
@@ -579,9 +743,8 @@ async def handle_unikernel(websocket):
     
     async def send_to_ws(msg):
         try:
-            resp_bytes = msgpack.packb(msg)
-            arr = np.frombuffer(resp_bytes, dtype=np.uint8)
-            xor_bytes = (arr ^ 0x5A).tobytes()
+            resp_bytes = msgpack.packb(msg, use_bin_type=True)
+            xor_bytes = secure_crypt(resp_bytes)
             await websocket.send(xor_bytes)
         except Exception as e:
             logging.debug(f"Websocket send failed: {e}")
@@ -601,10 +764,11 @@ async def handle_unikernel(websocket):
         async for message in websocket:
             try:
                 if isinstance(message, bytes):
-                    data = bytearray(message)
-                    for i in range(len(data)): data[i] ^= 0x5A
+                    data = bytearray(secure_crypt(message))
                     try:
-                        req = msgpack.unpackb(data)
+                        unpacker = msgpack.Unpacker(strict_map_key=False)
+                        unpacker.feed(data)
+                        req = next(unpacker)
                     except Exception as ue:
                         console.print(f"[bold red]Unpack Error:[/bold red] {ue} (Size: {len(data)} bytes)")
 

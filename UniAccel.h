@@ -5,8 +5,8 @@
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 
-#ifndef XOR_KEY
-#define XOR_KEY 0x5A
+#ifndef SESSION_KEY
+static uint8_t session_key[16] = {0x5A, 0xA5, 0x12, 0x34, 0x56, 0x78, 0x90, 0xAB, 0xCD, 0xEF, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66};
 #endif
 
 extern WebSocketsClient webSocket;
@@ -20,20 +20,20 @@ extern bool accelAnimating;
 extern bool accelChatMode;
 extern char currentModelName[32];
 extern bool accelModelLoaded;
-extern int gpuTemp;
-extern int gpuUtil;
-extern int gpuMem;
+extern uint16_t gpuTemp;
+extern uint8_t gpuUtil;
+extern uint16_t gpuMem;
 extern float gpuPwr;
-extern int gpuClk;
+extern uint16_t gpuClk;
 
-extern const char CLR_RST[];
-extern const char CLR_RED[];
-extern const char CLR_GRN[];
-extern const char CLR_YLW[];
-extern const char CLR_BLU[];
-extern const char CLR_MAG[];
-extern const char CLR_CYN[];
-extern const char CLR_WHT[];
+extern const char CLR_RST[] PROGMEM;
+extern const char CLR_RED[] PROGMEM;
+extern const char CLR_GRN[] PROGMEM;
+extern const char CLR_YLW[] PROGMEM;
+extern const char CLR_BLU[] PROGMEM;
+extern const char CLR_MAG[] PROGMEM;
+extern const char CLR_CYN[] PROGMEM;
+extern const char CLR_WHT[] PROGMEM;
 
 void initUniAccel();
 void loopUniAccel();
@@ -43,5 +43,13 @@ void onGpuResponse(uint8_t * payload, size_t length);
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length);
 void discoverAccelHost();
 void accelExec(const char* kernel, JsonArray data);
+void secure_crypt(uint8_t *data, size_t len);
+void kprintColor_P(const char *pgmColor);
+void kprintProgmem(const char *pgmStr);
+
+
+void hashPass(const char* input, char* output, const uint8_t* salt);
+bool secureEquals(const char* a, const char* b, size_t len);
+void generateNewSalt(uint8_t* salt);
 
 #endif

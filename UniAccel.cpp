@@ -1,6 +1,8 @@
 #include "UniAccel.h"
 #include "include/common.h"
 #include "include/commands.h"
+#include "include/vfs.h"
+#include "include/shell.h"
 #include <ESP8266mDNS.h>
 
 extern void kprint(const char *s);
@@ -10,6 +12,14 @@ extern void kprint(int n);
 extern void kprint(unsigned long n);
 extern void kprint(float f);
 extern void kprint(int n, int base);
+extern const char CLR_RST[] PROGMEM;
+extern const char CLR_RED[] PROGMEM;
+extern const char CLR_GRN[] PROGMEM;
+extern const char CLR_YLW[] PROGMEM;
+extern const char CLR_BLU[] PROGMEM;
+extern const char CLR_MAG[] PROGMEM;
+extern const char CLR_CYN[] PROGMEM;
+extern const char CLR_WHT[] PROGMEM;
 extern void kprintln();
 extern void kprintln(const char *s);
 extern void kprintln(const __FlashStringHelper *s);
@@ -19,32 +29,16 @@ extern void kprintColor(const char *c);
 extern void kprintlnLog(const String &msg);
 extern void addDmesg(const __FlashStringHelper *msg);
 
-#define MAX_FILES 16
-#define FLAG_ACTIVE 0x01
-#define NAME_LEN 12
-#define PATH_LEN 16
-#define CONTENT_LEN 128
-
-typedef struct {
-  char name[NAME_LEN];
-  char content[CONTENT_LEN];
-  char parentDir[PATH_LEN];
-  uint8_t flags;
-  uint16_t mode;
-  uint8_t ownerId;
-} RAMFile;
-
-extern RAMFile vfs[MAX_FILES];
 extern char currentPath[PATH_LEN];
 bool accelAnimating = false;
 bool accelChatMode = false;
 char currentModelName[32] = "None";
 bool accelModelLoaded = false;
-int gpuTemp = 0;
-int gpuUtil = 0;
-int gpuMem = 0;
+uint16_t gpuTemp = 0;
+uint8_t gpuUtil = 0;
+uint16_t gpuMem = 0;
 float gpuPwr = 0.0f;
-int gpuClk = 0;
+uint16_t gpuClk = 0;
 unsigned long lastFrameTime = 0;
 
 unsigned long lastRequestStartTime = 0;
@@ -54,22 +48,56 @@ bool aiInCodeBlock = false;
 bool aiLastWasNL = true;
 int aiBtCount = 0;
 
-uint8_t hex2int(char c) {
+void secure_crypt(uint8_t *data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        data[i] ^= session_key[i % 16];
+    }
+}
+
+ICACHE_FLASH_ATTR uint8_t hex2int(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
   return 0;
 }
 
-void initUniAccel() {
+ICACHE_FLASH_ATTR void initUniAccel() {
   addDmesg(F("UniAccel: Module V2.1.0-A Loaded"));
 }
 
 void redrawPrompt(); 
 
-void loopUniAccel() {
+ICACHE_FLASH_ATTR void loopUniAccel() {
   if (!accelStopRequested) {
     webSocket.loop();
+
+
+    if (accelConnected && ESP.getFreeHeap() < 5000) {
+        for (int i = 0; i < MAX_FILES; i++) {
+            if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR) && strlen(vfs[i].content) > 32) {
+                char swapCmd[128];
+                snprintf(swapCmd, sizeof(swapCmd), "swap %s %s", vfs[i].name, vfs[i].content);
+                handleAccelCommand(swapCmd);
+                vfs[i].flags &= ~FLAG_ACTIVE;  
+                addDmesg(F("V-HEAP: Swapped file to Host to free RAM"));
+                break; 
+            }
+        }
+    }
+
+
+    static unsigned long lastHb = 0;
+    if (accelConnected && (millis() - lastHb > 10000)) {
+        int freeR = ESP.getFreeHeap();
+        static JsonDocument hdoc; hdoc.clear();
+        hdoc["cmd"] = "heartbeat"; hdoc["heap"] = freeR;
+        if (freeR < 2000) hdoc["alert"] = "LOW_RAM_OVERLOAD";
+        uint8_t hbuf[128]; size_t hlen = serializeMsgPack(hdoc, hbuf, sizeof(hbuf));
+        secure_crypt(hbuf, hlen);
+        webSocket.sendBIN(hbuf, hlen);
+        lastHb = millis();
+    }
+
     if (accelConnected && accelAnimating && (millis() - lastFrameTime > 100)) {
       static JsonDocument doc;
       doc.clear();
@@ -78,7 +106,7 @@ void loopUniAccel() {
       doc["kernel"] = "render_3d";
       uint8_t buffer[256];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-      for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+      secure_crypt(buffer, len);
       lastRequestStartTime = millis();
       webSocket.sendBIN(buffer, len);
       lastFrameTime = millis();
@@ -102,7 +130,7 @@ void discoverAccelHost() {
     kprintln(accelPort);
   }
 }
-void handleAccelCommand(char *args) {
+ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   char *argv[8];
   int argc = kParseArgs(args, argv, 8);
   if (argc == 0) {
@@ -112,6 +140,117 @@ void handleAccelCommand(char *args) {
 
   char *sub = argv[0];
   char *subArgs = (argc > 1) ? argv[1] : NULL;
+
+ 
+  if (strcmp_P(sub, PSTR("nodes")) == 0) {
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_list";
+      uint8_t buffer[64]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+      secure_crypt(buffer, len); webSocket.sendBIN(buffer, len);
+      kprintln(F("Scanning Cluster Nodes...")); return;
+  }
+  if (strcmp_P(sub, PSTR("sync")) == 0 && subArgs) {
+      int fIdx = findFile(subArgs, currentPath);
+      if (fIdx == -1) { kprintln(F("File not found locally")); return; }
+      static JsonDocument doc; doc.clear();
+      doc["cmd"] = "cluster_sync"; doc["path"] = subArgs; doc["data"] = vfs[fIdx].content;
+      static uint8_t sync_buffer[2048]; size_t len = serializeMsgPack(doc, sync_buffer, sizeof(sync_buffer));
+      secure_crypt(sync_buffer, len); webSocket.sendBIN(sync_buffer, len);
+      kprint(F("Syncing file to cluster: ")); kprintln(subArgs); return;
+  }
+  if (strcmp_P(sub, PSTR("rexec")) == 0) {
+      if (argc < 3) { kprintln(F("Usage: accel rexec <ip/all> <cmd>")); return; }
+      char* target = argv[1];
+      char e_cmd[128] = "";
+      for (int i = 2; i < argc; i++) {
+          strncat(e_cmd, argv[i], sizeof(e_cmd)-strlen(e_cmd)-1);
+          if (i < argc - 1) strncat(e_cmd, " ", sizeof(e_cmd)-strlen(e_cmd)-1);
+      }
+      static JsonDocument doc; doc.clear();
+      doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = e_cmd;
+      static uint8_t rexec_buffer[256]; size_t len = serializeMsgPack(doc, rexec_buffer, sizeof(rexec_buffer));
+      secure_crypt(rexec_buffer, len); webSocket.sendBIN(rexec_buffer, len);
+      kprint(F("Rexec on ")); kprint(target); kprint(F(": ")); kprintln(e_cmd); return;
+  }
+  if (strcmp_P(sub, PSTR("proxy")) == 0 && argc > 1) {
+      kprint(F("Entering Proxy Shell for ")); kprintln(argv[1]);
+      kprintln(F("Type 'exit' to leave.")); setEnv("PROXY_TARGET", argv[1]); return;
+  }
+  if (strcmp_P(sub, PSTR("kvset")) == 0) {
+      if (argc < 3) { kprintln(F("Usage: accel kvset <k> <v>")); return; }
+      static JsonDocument doc; doc.clear();
+      doc["cmd"] = "cluster_kv_set"; doc["key"] = argv[1]; doc["val"] = argv[2];
+      static uint8_t kv_buffer[512]; size_t len = serializeMsgPack(doc, kv_buffer, sizeof(kv_buffer));
+      secure_crypt(kv_buffer, len); webSocket.sendBIN(kv_buffer, len);
+      kprint(F("Setting Global KV: ")); kprintln(argv[1]); return;
+  }
+  if (strcmp_P(sub, PSTR("kvget")) == 0 && argc > 1) {
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_kv_get"; doc["key"] = argv[1];
+      static uint8_t kvget_buffer[128]; size_t len = serializeMsgPack(doc, kvget_buffer, sizeof(kvget_buffer));
+      secure_crypt(kvget_buffer, len); webSocket.sendBIN(kvget_buffer, len); return;
+  }
+  if (strcmp_P(sub, PSTR("migrate")) == 0) {
+      if (argc < 3) { kprintln(F("Usage: accel migrate <ip> <task>")); return; }
+      char* target = argv[1]; char* taskName = argv[2];
+      for (int i = 0; i < MAX_TASKS; i++) {
+          if (taskTable[i].active && strcmp(taskTable[i].name, taskName) == 0) {
+              char rexecCmd[128]; snprintf(rexecCmd, sizeof(rexecCmd), "bg %s", taskName);
+              static JsonDocument doc; doc.clear();
+              doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = rexecCmd;
+              static uint8_t mig_buffer[256]; size_t len = serializeMsgPack(doc, mig_buffer, sizeof(mig_buffer));
+              secure_crypt(mig_buffer, len); webSocket.sendBIN(mig_buffer, len);
+              taskTable[i].active = false; kprint(F("Migrated task ")); kprintln(taskName); break;
+          }
+      } return;
+  }
+  if (strcmp_P(sub, PSTR("mount")) == 0 && argc > 1) {
+      static JsonDocument doc; doc.clear();
+      if (argc > 2 && strcmp(argv[1], "ls") == 0) {
+          doc["cmd"] = "fs_ls"; doc["path"] = argv[2];
+      } else {
+          doc["cmd"] = "fs_read"; doc["path"] = argv[1];
+      }
+      static uint8_t mount_buffer[256]; size_t len = serializeMsgPack(doc, mount_buffer, sizeof(mount_buffer));
+      secure_crypt(mount_buffer, len); webSocket.sendBIN(mount_buffer, len); return;
+  }
+  if (strcmp_P(sub, PSTR("swap")) == 0 && argc > 2) {
+      static JsonDocument doc; doc.clear();
+      if (strcmp(argv[1], "out") == 0 && argc > 3) { 
+          doc["cmd"] = "swap_out"; doc["key"] = argv[2]; doc["data"] = argv[3]; 
+      } else { 
+          doc["cmd"] = "swap_in"; doc["key"] = argv[2]; 
+      }
+      static uint8_t swap_buffer[512]; size_t len = serializeMsgPack(doc, swap_buffer, sizeof(swap_buffer));
+      secure_crypt(swap_buffer, len); webSocket.sendBIN(swap_buffer, len); return;
+  }
+  if (strcmp_P(sub, PSTR("broadcast")) == 0 && argc > 1) {
+      char msg[256] = "";
+      for (int i = 1; i < argc; i++) {
+          strncat(msg, argv[i], sizeof(msg)-strlen(msg)-1);
+          if (i < argc - 1) strncat(msg, " ", sizeof(msg)-strlen(msg)-1);
+      }
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "broadcast"; doc["data"] = msg;
+      static uint8_t bcast_buffer[512]; size_t len = serializeMsgPack(doc, bcast_buffer, sizeof(bcast_buffer));
+      secure_crypt(bcast_buffer, len); webSocket.sendBIN(bcast_buffer, len);
+      kprintln(F("Broadcast request sent...")); return;
+  }
+  if (strcmp_P(sub, PSTR("status")) == 0 || strcmp_P(sub, PSTR("health")) == 0 || strcmp_P(sub, PSTR("top")) == 0) {
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_top";
+      static uint8_t top_buffer[64]; size_t len = serializeMsgPack(doc, top_buffer, sizeof(top_buffer));
+      secure_crypt(top_buffer, len); webSocket.sendBIN(top_buffer, len); return;
+  }
+  if (strcmp_P(sub, PSTR("discover")) == 0) {
+      discoverAccelHost(); return;
+  }
+  if (strcmp_P(sub, PSTR("bench")) == 0) {
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "gpu_bench";
+      static uint8_t bench_buffer[64]; size_t len = serializeMsgPack(doc, bench_buffer, sizeof(bench_buffer));
+      secure_crypt(bench_buffer, len); webSocket.sendBIN(bench_buffer, len); return;
+  }
+  if (strcmp_P(sub, PSTR("physics")) == 0) {
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "gpu_physics";
+      static uint8_t phys_buffer[64]; size_t len = serializeMsgPack(doc, phys_buffer, sizeof(phys_buffer));
+      secure_crypt(phys_buffer, len); webSocket.sendBIN(phys_buffer, len); return;
+  }
 
   if (strcmp_P(sub, PSTR("chat")) == 0) {
     if (!accelConnected) {
@@ -193,8 +332,7 @@ void handleAccelCommand(char *args) {
     doc["code"] = vfs[fIdx].content;
     uint8_t buffer[CONTENT_LEN + 128];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++)
-      buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Injecting CUDA code to Host..."));
 
@@ -220,8 +358,7 @@ void handleAccelCommand(char *args) {
 
     uint8_t msgBuffer[256];
     size_t msgLen = serializeMsgPack(doc, msgBuffer, sizeof(msgBuffer));
-    for (size_t i = 0; i < msgLen; i++)
-      msgBuffer[i] ^= XOR_KEY;
+    secure_crypt(msgBuffer, msgLen);
 
     accelStartTime = millis();
     webSocket.sendBIN(msgBuffer, msgLen);
@@ -269,8 +406,7 @@ void handleAccelCommand(char *args) {
 
       uint8_t buf[128];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-      for (size_t i = 0; i < len; i++)
-        buf[i] ^= XOR_KEY;
+      secure_crypt(buf, len);
 
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
@@ -292,8 +428,7 @@ void handleAccelCommand(char *args) {
 
       uint8_t buf[128];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-      for (size_t i = 0; i < len; i++)
-        buf[i] ^= XOR_KEY;
+      secure_crypt(buf, len);
 
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
@@ -319,8 +454,7 @@ void handleAccelCommand(char *args) {
 
       uint8_t buf[256];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-      for (size_t i = 0; i < len; i++)
-        buf[i] ^= XOR_KEY;
+      secure_crypt(buf, len);
 
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
@@ -348,8 +482,7 @@ void handleAccelCommand(char *args) {
 
       uint8_t buf[1024];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-      for (size_t i = 0; i < len; i++)
-        buf[i] ^= XOR_KEY;
+      secure_crypt(buf, len);
 
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
@@ -375,8 +508,7 @@ void handleAccelCommand(char *args) {
 
     uint8_t buf[128];
     size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-    for (size_t j = 0; j < len; j++)
-      buf[j] ^= XOR_KEY;
+    secure_crypt(buf, len);
 
     accelStartTime = millis();
     webSocket.sendBIN(buf, len);
@@ -436,8 +568,7 @@ void handleAccelCommand(char *args) {
     doc["cmd"] = "gpu_list";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++)
-      buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Requesting model presets..."));
   } else if (strcmp_P(sub, PSTR("unload")) == 0) {
@@ -451,8 +582,7 @@ void handleAccelCommand(char *args) {
     doc["cmd"] = "gpu_unload";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++)
-      buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Sending unload request..."));
   } else if (strcmp_P(sub, PSTR("load")) == 0) {
@@ -471,8 +601,7 @@ void handleAccelCommand(char *args) {
     doc["model_id"] = subArgs;
     uint8_t buffer[256];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++)
-      buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprint(F("Loading model: "));
     kprintln(subArgs);
@@ -492,8 +621,7 @@ void handleAccelCommand(char *args) {
     doc["prompt"] = subArgs;
     uint8_t buffer[512];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++)
-      buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln();
     kprintColor(CLR_MAG);
@@ -512,7 +640,7 @@ void handleAccelCommand(char *args) {
     doc["cmd"] = "gpu_physics";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     lastRequestStartTime = millis();
     webSocket.sendBIN(buffer, len);
     kprintln(F("Starting N-Body Physics Simulation..."));
@@ -530,24 +658,10 @@ void handleAccelCommand(char *args) {
     }
     uint8_t buffer[1024];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     lastRequestStartTime = millis();
     webSocket.sendBIN(buffer, len);
     kprintln(F("Offloading FFT to GPU..."));
-  } else if (strcmp_P(sub, PSTR("cluster")) == 0) {
-    if (!accelConnected) {
-      kprintln(F("Not connected."));
-      return;
-    }
-    static JsonDocument doc;
-    doc.clear();
-    doc["cmd"] = "gpu_cluster_list";
-    uint8_t buffer[64];
-    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
-    lastRequestStartTime = millis();
-    webSocket.sendBIN(buffer, len);
-    kprintln(F("Requesting Cluster Node List..."));
   } else if (strcmp_P(sub, PSTR("swap")) == 0) {
     if (!accelConnected || !subArgs) return;
     char* key = strtok(subArgs, " ");
@@ -561,7 +675,7 @@ void handleAccelCommand(char *args) {
         kprint(F("Requesting swap in: ")); kprintln(key);
     }
     uint8_t buffer[512]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp_P(sub, PSTR("mount")) == 0) {
     if (!accelConnected || !subArgs) return;
@@ -576,7 +690,7 @@ void handleAccelCommand(char *args) {
         kprint(F("Remote Cat: ")); kprintln(path ? path : mode);
     }
     uint8_t buffer[256]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp_P(sub, PSTR("pipe")) == 0) {
     if (!accelConnected || !subArgs) return;
@@ -596,25 +710,89 @@ void handleAccelCommand(char *args) {
     doc["cmd"] = "edge_pipe"; doc["model"] = model; doc["data"] = data ? data : "";
     if (callback) doc["on_match"] = callback;
     uint8_t buffer[1024]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Pushing data to Edge-AI Pipeline..."));
+  } else if (strcmp_P(sub, PSTR("cluster")) == 0) {
+    if (!accelConnected || !subArgs) {
+        kprintln(F("Usage: accel cluster [list|top|sync|rexec|proxy|broadcast|kvset|kvget]"));
+        return;
+    }
+    char* c_sub = strtok(subArgs, " ");
+    char* c_args = strtok(NULL, "");
+    
+    static JsonDocument doc; doc.clear();
+    if (strcmp(c_sub, "list") == 0) {
+        doc["cmd"] = "cluster_list";
+    } else if (strcmp(c_sub, "broadcast") == 0) {
+        doc["cmd"] = "broadcast"; doc["data"] = c_args;
+        kprintln(F("Broadcasting message..."));
+    } else if (strcmp(c_sub, "rexec") == 0) {
+        char* target = strtok(c_args, " ");
+        char* e_cmd = strtok(NULL, "");
+        if (!target || !e_cmd) { kprintln(F("Usage: rexec <ip/all> <cmd>")); return; }
+        doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = e_cmd;
+        kprint(F("Rexec on ")); kprint(target); kprint(F(": ")); kprintln(e_cmd);
+    } else if (strcmp(c_sub, "kvset") == 0) {
+        char* key = strtok(c_args, " ");
+        char* val = strtok(NULL, "");
+        if (!key || !val) { kprintln(F("Usage: kvset <k> <v>")); return; }
+        doc["cmd"] = "cluster_kv_set"; doc["key"] = key; doc["val"] = val;
+    } else if (strcmp(c_sub, "kvget") == 0) {
+        if (!c_args) { kprintln(F("Usage: kvget <k>")); return; }
+        doc["cmd"] = "cluster_kv_get"; doc["key"] = c_args;
+    } else if (strcmp(c_sub, "top") == 0) {
+        doc["cmd"] = "cluster_top";
+    } else if (strcmp(c_sub, "sync") == 0) {
+        if (!c_args) { kprintln(F("Usage: sync <file>")); return; }
+        int fIdx = findFile(c_args, currentPath);
+        if (fIdx == -1) { kprintln(F("File not found locally")); return; }
+        doc["cmd"] = "cluster_sync"; doc["path"] = c_args; doc["data"] = vfs[fIdx].content;
+    } else if (strcmp(c_sub, "proxy") == 0) {
+        if (!c_args) { kprintln(F("Usage: proxy <ip>")); return; }
+        kprint(F("Entering Proxy Shell for ")); kprintln(c_args);
+        kprintln(F("Type 'exit' to leave remote shell."));
+        setEnv("PROXY_TARGET", c_args);
+        return;
+    }
+    
+    if (!doc.isNull()) {
+        uint8_t buffer[1024]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+        secure_crypt(buffer, len);
+        webSocket.sendBIN(buffer, len);
+    }
   } else {
-    kprintColor(CLR_MAG);
-    kprintln(F("╭─── UniAccel GPU Help ───────────────────────────────╮"));
-    kprint(F("│ ")); kprintColor(CLR_CYN); kprint(F("CORE       ")); kprintColor(CLR_RST); kprintln(F("connect, discover, status, disconnect  │"));
-    kprint(F("│ ")); kprintColor(CLR_YLW); kprint(F("AI         ")); kprintColor(CLR_RST); kprintln(F("load, unload, ask, chat, hf            │"));
-    kprint(F("│ ")); kprintColor(CLR_GRN); kprint(F("STORAGE    ")); kprintColor(CLR_RST); kprintln(F("swap, mount, pipe, cluster             │"));
-    kprint(F("│ ")); kprintColor(CLR_BLU); kprint(F("KERNELS    ")); kprintColor(CLR_RST); kprintln(F("physics, signal, bench, list           │"));
-    kprintColor(CLR_MAG);
-    kprintln(F("╰─────────────────────────────────────────────────────╯"));
-    kprintColor(CLR_RST);
+    kprintColor_P(CLR_CYN);
+    kprintln(F("╭─── \x1B[1mUniAccel Universal Dashboard (Distributed Suite)\x1B[22m ───╮"));
+    kprintColor_P(CLR_WHT);
+    kprintln(F("│ COMMAND / PATTERN           │ DESCRIPTION             │"));
+    kprintln(F("├─────────────────────────────┼─────────────────────────┤"));
+    kprintln(F("│ connect <ip> <port>         │ Link to Cluster Host    │"));
+    kprintln(F("│ status / health             │ Node & GPU Telemetry    │"));
+    kprintln(F("│ discover                    │ Auto-mDNS Host Search   │"));
+    kprintln(F("├─────────────────────────────┼─────────────────────────┤"));
+    kprintln(F("│ ask <prompt> / chat         │ AI Neural Engine        │"));
+    kprintln(F("│ load <model_id>             │ Prepare AI VRAM         │"));
+    kprintln(F("│ bench / physics             │ GPU Stress & Compute    │"));
+    kprintln(F("├─────────────────────────────┼─────────────────────────┤"));
+    kprintln(F("│ nodes                       │ Scan Cluster Topology   │"));
+    kprintln(F("│ sync <file>                 │ Cluster-wide File Sync  │"));
+    kprintln(F("│ rexec <ip/all> <cmd>        │ Remote Task Execution   │"));
+    kprintln(F("│ migrate <ip> <task>         │ Task Workload Move      │"));
+    kprintln(F("│ broadcast <msg>             │ Send Message to All     │"));
+    kprintln(F("├─────────────────────────────┼─────────────────────────┤"));
+    kprintln(F("│ kvset <key> <val>           │ Cluster Global RAM      │"));
+    kprintln(F("│ kvget <key>                 │ Retrieve Cluster RAM    │"));
+    kprintln(F("│ swap out/in <key>           │ Virtual Memory Offload  │"));
+    kprintln(F("│ mount <path>                │ Remote UniFS Mapping    │"));
+    kprintColor_P(CLR_CYN);
+    kprintln(F("╰─────────────────────────────┴─────────────────────────╯"));
+    kprintColor_P(CLR_RST);
   }
 }
 
-void onGpuResponse(uint8_t *payload, size_t length) {
-  for (size_t i = 0; i < length; i++)
-    payload[i] ^= XOR_KEY;
+ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
+  secure_crypt(payload, length);
 
   static JsonDocument res;
   res.clear();
@@ -697,17 +875,169 @@ void onGpuResponse(uint8_t *payload, size_t length) {
             for (JsonVariant f : files) {
                 kprint(F("  - ")); kprintln(f.as<const char*>());
             }
-        } else if (strcmp(cmd, "edge_result") == 0) {
-            kprintColor(CLR_YLW);
-            kprint(F("[EDGE-AI] "));
-            kprintColor(CLR_RST);
-            kprintln(res["data"].as<const char*>());
             if (res.containsKey("callback") && !res["callback"].isNull()) {
                 const char* cb = res["callback"];
                 kprint(F("[PIPE] Triggering callback: ")); kprintln(cb);
                 dispatchCommand((char*)cb, true);
             }
+        } else if (strcmp(cmd, "cluster_msg") == 0) {
+            kprintColor_P(CLR_MAG);
+            kprint(F("[CLUSTER:")); kprint(res["from"].as<const char*>()); kprint(F("] "));
+            kprintColor_P(CLR_RST);
+            kprintln(res["data"].as<const char*>());
+        } else if (strcmp(cmd, "cluster_list") == 0) {
+            kprintColor_P(CLR_CYN); kprintln(F("╭── Cluster Nodes Discovery ──────────────────────────╮"));
+            kprintln(F("│ IP Address        │ Uptime(s) │ Requests │ Status   │"));
+            kprintln(F("├───────────────────┼───────────┼──────────┼──────────┤"));
+            kprintColor_P(CLR_RST);
+            JsonArray nodes = res["nodes"].as<JsonArray>();
+            for (JsonVariant n : nodes) {
+                char buf[80];
+                snprintf(buf, sizeof(buf), "│ %-17s │ %-9d │ %-8d │ ", 
+                    n["ip"].as<const char*>(), n["uptime"].as<int>(), n["reqs"].as<int>());
+                kprint(buf);
+                kprintColor_P(CLR_GRN); kprint(F("ONLINE")); kprintColor_P(CLR_RST);
+                kprintln(F("   │"));
+            }
+            kprintColor_P(CLR_CYN);
+            kprintln(F("╰───────────────────┴───────────┴──────────┴──────────╯"));
+            kprintColor_P(CLR_RST);
+        } else if (strcmp(cmd, "remote_exec") == 0) {
+            kprintColor_P(CLR_RED);
+            kprint(F("! [CLUSTER-EXEC] ")); kprintColor_P(CLR_YLW); kprint(res["from"].as<const char*>());
+            kprintColor_P(CLR_WHT); kprint(F(" orders: ")); kprintColor_P(CLR_CYN); kprintln(res["exec_cmd"].as<const char*>());
+            kprintColor_P(CLR_RST);
+            dispatchCommand((char*)res["exec_cmd"].as<const char*>(), false);
+        } else if (strcmp(cmd, "kv_update") == 0 || strcmp(cmd, "kv_data") == 0) {
+            kprintColor_P(CLR_MAG); kprint(F("[GLOBAL-KV] ")); 
+            kprintColor_P(CLR_CYN); kprint(res["key"].as<const char*>());
+            kprintColor_P(CLR_WHT); kprint(F(" -> ")); 
+            kprintColor_P(CLR_GRN); kprintln(res["val"].as<const char*>());
+            kprintColor_P(CLR_RST);
+        } else if (strcmp(cmd, "cluster_top") == 0) {
+            kprintColor_P(CLR_YLW);
+            kprintln(F("╭── Global Cluster System Monitor ────────────────────╮"));
+            kprintln(F("│ IP Address        │ Heap Free │ Uptime   │ Requests │"));
+            kprintln(F("├───────────────────┼───────────┼──────────┼──────────┤"));
+            kprintColor_P(CLR_RST);
+            JsonArray nodes = res["nodes"].as<JsonArray>();
+            for (JsonVariant n : nodes) {
+                int heap = n["heap"].as<int>();
+                char buf[80];
+                snprintf(buf, sizeof(buf), "│ %-17s │ ", n["ip"].as<const char*>());
+                kprint(buf);
+                if (heap < 10000) kprintColor_P(CLR_RED);
+                else if (heap < 20000) kprintColor_P(CLR_YLW);
+                else kprintColor_P(CLR_GRN);
+                snprintf(buf, sizeof(buf), "%-9d", heap); kprint(buf);
+                kprintColor_P(CLR_RST);
+                snprintf(buf, sizeof(buf), " │ %-8d │ %-8d │", n["uptime"].as<int>(), n["reqs"].as<int>());
+                kprintln(buf);
+            }
+            kprintColor_P(CLR_YLW);
+            kprintln(F("╰───────────────────┴───────────┴──────────┴──────────╯"));
+            kprintColor_P(CLR_RST);
+        } else if (strcmp(cmd, "fs_sync") == 0) {
+            const char* path = res["path"].as<const char*>();
+            const char* data = res["data"].as<const char*>();
+            if (!path || !data) { kprintln(F("[CLUSTER-SYNC:ERR] Malformed packet")); return; }
+            int fIdx = findFile(path, "/");
+            if (fIdx != -1) {
+                strncpy(vfs[fIdx].content, data, sizeof(vfs[fIdx].content)-1);
+                kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:UPDATE] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
+            } else {
+                int newIdx = -1;
+                for (int i = 0; i < MAX_FILES; i++) {
+                    if (!(vfs[i].flags & FLAG_ACTIVE)) {
+                        newIdx = i;
+                        break;
+                    }
+                }
+                if (newIdx != -1) {
+                    vfs[newIdx].flags |= FLAG_ACTIVE;
+                    strncpy(vfs[newIdx].name, path, sizeof(vfs[newIdx].name)-1);
+                    strncpy(vfs[newIdx].parentDir, "/", sizeof(vfs[newIdx].parentDir)-1);
+                    strncpy(vfs[newIdx].content, data, sizeof(vfs[newIdx].content)-1);
+                    kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:NEW] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
+                } else {
+                    kprintln(F("[CLUSTER-SYNC:ERR] No VFS slots available"));
+                }
+            }
+        } else if (strcmp(cmd, "proxy_in") == 0) {
+            const char* from = res["from"];
+            const char* data = res["data"];
+            kprintColor_P(CLR_MAG);
+            kprint(F("╭─ REMOTE SESSION: ")); kprint(from); kprintln(F(" ─╮"));
+            kprintColor_P(CLR_RST);
+            kprint(F("│ CMD: ")); kprintln(data);
+            kprintColor_P(CLR_MAG);
+            kprintln(F("╰─────────────────────────────────────╯"));
+            kprintColor_P(CLR_RST);
+            setEnv("PROXY_MASTER", from);
+            dispatchCommand((char*)data, false);
+        } else if (strcmp(cmd, "node_fs_req") == 0) {
+            const char* from = res["from"];
+            const char* path = res["path"];
+            const char* action = res["action"];
+            static JsonDocument rdoc; rdoc.clear();
+            rdoc["cmd"] = "node_fs_res"; rdoc["target"] = from; rdoc["path"] = path;
+            
+            if (strcmp(action, "list") == 0) {
+                JsonArray files = rdoc["files"].to<JsonArray>();
+                for (int i = 0; i < 16; i++) {
+                    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].parentDir, path) == 0) {
+                        files.add(vfs[i].name);
+                    }
+                }
+            } else if (strcmp(action, "read") == 0) {
+                int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/"); 
+                if (fIdx != -1) rdoc["data"] = vfs[fIdx].content;
+                else rdoc["data"] = "File not found";
+            }
+            
+            uint8_t rbuf[1024]; size_t rlen = serializeMsgPack(rdoc, rbuf, sizeof(rbuf));
+            secure_crypt(rbuf, rlen);
+            webSocket.sendBIN(rbuf, rlen);
+        } else if (strcmp(cmd, "node_fs_data") == 0) {
+            kprintColor_P(CLR_CYN);
+            kprint(F("╭── Remote Node File System [")); kprint(res["path"].as<const char*>()); kprintln(F("] ──╮"));
+            kprintColor_P(CLR_RST);
+            if (res.containsKey("files")) {
+                JsonArray files = res["files"].as<JsonArray>();
+                for (JsonVariant f : files) {
+                    kprint(F("  - ")); kprintln(f.as<const char*>());
+                }
+            } else if (res.containsKey("data")) {
+                kprintln(res["data"].as<const char*>());
+            }
+            kprintColor_P(CLR_CYN);
+            kprintln(F("╰──────────────────────────────────────────────────╯"));
+            kprintColor_P(CLR_RST);
+        } else if (strcmp(cmd, "proxy_data") == 0) {
+            kprintColor_P(CLR_CYN);
+            kprint(F("[")); kprint(res["from"].as<const char*>()); kprint(F("] "));
+            kprintColor_P(CLR_RST);
+            kprintln(res["data"].as<const char*>());
         }
+
+      
+        if (res.containsKey("model_id")) {
+            const char* full_id = res["model_id"].as<const char*>();
+            if (full_id) {
+              
+                const char* last_slash = strrchr(full_id, '/');
+                const char* short_name = (last_slash) ? last_slash + 1 : full_id;
+                strncpy(currentModelName, short_name, sizeof(currentModelName)-1);
+            }
+        }
+    }
+
+    if (res.containsKey("exec_cmd")) {
+        const char* e_cmd = res["exec_cmd"];
+        kprintColor_P(CLR_YLW);
+        kprint(F(" ✦ [AGENT] Executing: ")); kprintln(e_cmd);
+        kprintColor_P(CLR_RST);
+        dispatchCommand((char*)e_cmd, false);
     }
     if (res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0) {
       int w = res.containsKey("width") ? res["width"].as<int>() : 0;
@@ -766,35 +1096,35 @@ void onGpuResponse(uint8_t *payload, size_t length) {
       }
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "gpu_bench") == 0) {
       JsonObject data = res["data"];
-      kprintColor(CLR_GRN);
+      kprintColor_P(CLR_GRN);
       kprintln(F("\nBenchmark Results"));
 
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprint(F(" - Memory Bandwidth: "));
-      kprintColor(CLR_YLW);
+      kprintColor_P(CLR_YLW);
       kprint(data["bandwidth_gbs"].as<float>());
       kprintln(F(" GB/s"));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprint(F(" - Compute Throughput: "));
-      kprintColor(CLR_YLW);
+      kprintColor_P(CLR_YLW);
       kprint(data["compute_gflops"].as<float>());
       kprintln(F(" GFLOPS"));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprint(F(" - Shared Memory Acc: "));
-      kprintColor(CLR_YLW);
+      kprintColor_P(CLR_YLW);
       kprint(data["shm_lat_ms"].as<float>());
       kprintln(F(" ms"));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprint(F(" - Atomic Ops Speed: "));
-      kprintColor(CLR_YLW);
+      kprintColor_P(CLR_YLW);
       kprint(data["atomic_ms"].as<float>());
       kprintln(F(" ms"));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprint(F(" - Kernel Launch Lat: "));
-      kprintColor(CLR_YLW);
+      kprintColor_P(CLR_YLW);
       kprint(data["launch_lat_us"].as<float>());
       kprintln(F(" us"));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       kprintln(F("--------------------------------------"));
     } else if ((res.containsKey("cmd") &&
                 strcmp(res["cmd"], "gpu_encrypt") == 0) ||
@@ -834,9 +1164,9 @@ void onGpuResponse(uint8_t *payload, size_t length) {
         }
     } else if (res.containsKey("kernel") && strcmp(res["kernel"], "cluster_list") == 0) {
         JsonArray nodes = res["data"];
-        kprintColor(CLR_CYN);
+        kprintColor_P(CLR_CYN);
         kprintln(F("\n--- UniKernel Cluster Nodes ---"));
-        kprintColor(CLR_RST);
+        kprintColor_P(CLR_RST);
         for (JsonObject node : nodes) {
             kprint(F("Node: ")); kprint(node["ip"].as<const char*>());
             kprint(F(" | Req: ")); kprint(node["req"].as<int>());
@@ -845,21 +1175,21 @@ void onGpuResponse(uint8_t *payload, size_t length) {
         }
         if (res.containsKey("dashboard")) {
             kprint(F("Dashboard: "));
-            kprintColor(CLR_YLW);
+            kprintColor_P(CLR_YLW);
             kprintln(res["dashboard"].as<const char*>());
-            kprintColor(CLR_RST);
+            kprintColor_P(CLR_RST);
         }
-        kprintColor(CLR_CYN);
+        kprintColor_P(CLR_CYN);
         kprintln(F("-------------------------------"));
-        kprintColor(CLR_RST);
+        kprintColor_P(CLR_RST);
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_delta") == 0) {
         if (res.containsKey("data")) {
             String delta = res["data"].as<String>();
 
             if (!aiBlockStarted) {
-                kprintColor(CLR_CYN);
+                kprintColor_P(CLR_CYN);
                 kprintln(F("╭─── AI Response ───────────────────────────────────"));
-                kprintColor(CLR_RST);
+                kprintColor_P(CLR_RST);
                 aiBlockStarted = true;
                 aiLastWasNL = true;
                 aiInCodeBlock = false;
@@ -868,10 +1198,10 @@ void onGpuResponse(uint8_t *payload, size_t length) {
             
             for (int i=0; i<delta.length(); i++) {
                 if (aiLastWasNL) {
-                    kprintColor(CLR_CYN);
+                    kprintColor_P(CLR_CYN);
                     kprint(F("│ "));
-                    kprintColor(CLR_RST);
-                    if (aiInCodeBlock) kprintColor(CLR_YLW);
+                    kprintColor_P(CLR_RST);
+                    if (aiInCodeBlock) kprintColor_P(CLR_YLW);
                     aiLastWasNL = false;
                 }
 
@@ -881,7 +1211,7 @@ void onGpuResponse(uint8_t *payload, size_t length) {
                     if (aiBtCount == 3) {
                         aiInCodeBlock = !aiInCodeBlock;
                         aiBtCount = 0;
-                        kprintColor(aiInCodeBlock ? CLR_YLW : CLR_RST);
+                        kprintColor_P(aiInCodeBlock ? CLR_YLW : CLR_RST);
                     }
                     kprint(c);
                 } else {
@@ -890,15 +1220,15 @@ void onGpuResponse(uint8_t *payload, size_t length) {
                     if (c == '\n') {
                         kprint('\r');
                         aiLastWasNL = true;
-                        if (aiInCodeBlock) kprintColor(CLR_RST);
+                        if (aiInCodeBlock) kprintColor_P(CLR_RST);
                     }
                 }
             }
         }
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_end") == 0) {
-        kprintColor(CLR_CYN);
+        kprintColor_P(CLR_CYN);
         kprintln(F("╰───────────────────────────────────────────────────"));
-        kprintColor(CLR_RST);
+        kprintColor_P(CLR_RST);
         
         aiBlockStarted = false;
         aiInCodeBlock = false;
@@ -936,19 +1266,19 @@ void onGpuResponse(uint8_t *payload, size_t length) {
     }
 
   } else if (res.containsKey("status") && strcmp(res["status"], "info") == 0) {
-    kprintColor(CLR_CYN);
+    kprintColor_P(CLR_CYN);
     kprint(F("[GPU] "));
-    kprintColor(CLR_RST);
+    kprintColor_P(CLR_RST);
     kprintln(res["message"].as<const char *>());
   } else {
-    kprintColor(CLR_RED);
+    kprintColor_P(CLR_RED);
     kprint(F("GPU Error: "));
     kprintln(res["message"].as<const char *>());
-    kprintColor(CLR_RST);
+    kprintColor_P(CLR_RST);
   }
 }
 
-void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
+ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
   case WStype_DISCONNECTED:
     if (accelStopRequested)
@@ -956,20 +1286,20 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     accelConnected = false;
     accelRetryCount++;
     {
-      kprintColor(CLR_RED);
+      kprintColor_P(CLR_RED);
       kprint(F("[System] GPU Link Lost. Re-syncing ("));
       kprint(accelRetryCount);
       kprintln(F("/3)..."));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
       accelChatMode = false;
     }
     if (accelRetryCount >= 3) {
       accelStopRequested = true;
       webSocket.setReconnectInterval(0);
       webSocket.disconnect();
-      kprintColor(CLR_RED);
+      kprintColor_P(CLR_RED);
       kprintln(F("[CRITICAL] GPU Acceleration Offline. Link failed after 3 attempts."));
-      kprintColor(CLR_RST);
+      kprintColor_P(CLR_RST);
     }
 
     break;
@@ -980,17 +1310,16 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
     accelRetryCount = 0;
     addDmesg(F("UniAccel: Connected"));
     kprint(F("\n"));
-    kprintColor(CLR_GRN);
+    kprintColor_P(CLR_GRN);
     kprintln(F("Connected to GPU Host Successfully"));
-    kprintColor(CLR_RST);
+    kprintColor_P(CLR_RST);
     {
       static JsonDocument doc;
       doc.clear();
       doc["cmd"] = "gpu_list";
       uint8_t buffer[64];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-      for (size_t i = 0; i < len; i++)
-        buffer[i] ^= XOR_KEY;
+      secure_crypt(buffer, len);
       webSocket.sendBIN(buffer, len);
     }
     break;
@@ -1005,7 +1334,7 @@ void webSocketEvent(WStype_t type, uint8_t *payload, size_t length) {
   }
 }
 
-void accelExec(const char *kernel, JsonArray data) {
+ICACHE_FLASH_ATTR void accelExec(const char *kernel, JsonArray data) {
   if (!accelConnected)
     return;
   static JsonDocument doc;
@@ -1016,14 +1345,13 @@ void accelExec(const char *kernel, JsonArray data) {
 
   uint8_t buffer[256];
   size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-  for (size_t i = 0; i < len; i++)
-    buffer[i] ^= XOR_KEY;
+  secure_crypt(buffer, len);
 
   accelStartTime = millis();
   webSocket.sendBIN(buffer, len);
 }
 
-void handleHfCommand(char *args) {
+ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
   if (!accelConnected) {
     kprintln(F("Error: Not connected to GPU Host."));
     return;
@@ -1043,7 +1371,7 @@ void handleHfCommand(char *args) {
     doc["token"] = subArgs;
     uint8_t buffer[256];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Sending token to GPU Host..."));
   } else if (strcmp(sub, "status") == 0) {
@@ -1052,7 +1380,7 @@ void handleHfCommand(char *args) {
     doc["cmd"] = "hf_status";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "offline") == 0) {
     static JsonDocument doc;
@@ -1061,7 +1389,7 @@ void handleHfCommand(char *args) {
     doc["value"] = true;
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Enabling Offline Mode..."));
   } else if (strcmp(sub, "list") == 0) {
@@ -1069,7 +1397,7 @@ void handleHfCommand(char *args) {
     doc["cmd"] = "hf_list";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "help") == 0) {
     kprintln(F("HF CLI Usage:"));
@@ -1080,4 +1408,13 @@ void handleHfCommand(char *args) {
   } else {
     kprintln(F("Usage: hf [token/status/offline/list/help]"));
   }
+}
+
+ICACHE_FLASH_ATTR void sendProxyData(const char* target, const char* msg) {
+    if (!accelConnected) return;
+    JsonDocument doc;
+    doc["cmd"] = "proxy_out"; doc["target"] = target; doc["data"] = msg;
+    uint8_t buffer[512]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    secure_crypt(buffer, len);
+    webSocket.sendBIN(buffer, len);
 }
