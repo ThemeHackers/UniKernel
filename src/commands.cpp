@@ -2035,6 +2035,10 @@ void handle_cron(char *args, bool fromSerial) {
   sendResponse(true, 200, "Cron Table Empty");
 }
 
+void handle_bg(char *args, bool fromSerial) {
+  sendResponse(true, 200, "Task moved to background");
+}
+
 void handle_recovery(char *args, bool fromSerial) {
   if (!fromSerial) {
     sendResponse(false, 403, "Recovery only allowed via Serial");
