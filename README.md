@@ -66,7 +66,6 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 | `ntp` | `ntp` | Synchronize system time via Network Time Protocol. |
 | `telnet` | `telnet [on/off]` | Enable/Disable remote access (Unsafe, Disabled by default). |
 | `web` | `web [on/off]` | Enable/Disable the Web Dashboard (Hardened with Firewall). |
-| `ssh` | `ssh [on/off]` | Enable/Disable Encrypted Shell (**EC P-256 Elliptic Curve**). |
 | `bt` | `bt [on/off]` | Manage Bluetooth status (ESP32 only). |
 | `netstat` | `netstat` | Display active network services and ports. |
 
@@ -120,16 +119,16 @@ UniKernel is a microcontroller-level kernel emulator designed for ESP8266 resour
 *   **Salt Rotation:** Every password change generates a new 16-byte random salt, stored securely in separate EEPROM sectors.
 *   **Brute-Force Protection:** Exponential backoff (Cooldown) triggered after failed logins. 5 consecutive fails trigger a **300s system lockout**.
 *   **Physical Protection:** System boot scripts (`[0-2]rc.sh`) can only be modified via **Serial Console** to prevent remote persistent threats.
-*   **Encrypted Shell (SSH):** Advanced encryption using **Elliptic Curve P-256 (secp256r1)** for fast and secure remote management.
-*   **Hardened Firewall:** Whitelist your IP using `firewall allow [IP]`. This protects Serial, Telnet, SSH, and the **Web API/Dashboard**.
+*   **Hardened Firewall:** Whitelist your IP using `firewall allow [IP]`. This protects Serial, Telnet, and the **Web API/Dashboard**.
 *   **OTA Security:** Firmware updates are disabled by default. A **SHA-256 Hashed** password must be configured in EEPROM before OTA can be enabled.
 *   **Session Security:** Automatic logout occurs after 5 minutes of inactivity.
+*   **Network Hardening:** Telnet and Web services are protected by strict RAM safeguards to prevent OOM-based Denial-of-Service attacks.
 
 ## 3. Technical Specifications
 
 *   **Platform:** ESP8266 (NodeMCU / Wemos) & **ESP32 (DevKit / D1)**
 *   **CPU Speed:** 160 MHz (Optimized Default)
-*   **Communication:** Serial Baud 115200 / Telnet Port 23 / HTTP Port 80 / SSH Port 22
+*   **Communication:** Serial Baud 115200 / Telnet Port 23 / HTTP Port 80
 *   **File System:** Hybrid VFS (RAM-based) + LittleFS (Persistent Flash-based)
 
 ---
@@ -195,6 +194,9 @@ UniAccel is a distributed computing engine that offloads heavy mathematical and 
 | `accel signal` | `accel signal` | GPU-Accelerated **FFT Signal Analysis**. |
 | `accel cluster` | `accel cluster` | View all **Connected Cluster Nodes** metadata. |
 | `accel status` | `accel status` | View connection state and real-time **GPU Telemetry**. |
+| `accel swap`   | `accel swap out/in [key] [val]` | Offload/retrieve data to **Virtual Swap RAM** on Host. |
+| `accel mount`  | `accel mount [path]` | **UniFS Remote Mounting**: Access files from Host `remote_fs`. |
+| `accel pipe`   | `accel pipe [model] [data]` | **Edge-AI Pipeline**: Stream data for remote model processing. |
 | `accel disconnect`| `accel disconnect` | Close the link to the accelerator host. |
 
 ### 7.2 Advanced GPU Kernels
@@ -213,6 +215,8 @@ UniKernel now features a dedicated AI Shell powered by TinyLlama on the GPU Host
 - **`accel ask <prompt>`**: Query the AI directly from the system shell.
 
 **Inside AI Chat Mode:**
+- **Auto-Interception**: You don't need to prefix commands with `accel ask`. Anything you type is sent to the AI unless it's a shell command like `exit`, `clear`, or `logout`.
+- **Premium UI**: AI responses are rendered in stylized cards with ANSI borders and code highlighting.
 - Type `exit` or `quit` to return to the system shell.
 
 ### 7.4 Performance Benchmarking (`accel bench`)
@@ -260,6 +264,14 @@ If you receive a `403 Forbidden` or `Gated Repo` error when using `accel load`, 
 **Offline Usage:**
 If your GPU Host has restricted internet access, use `hf offline` to prevent the system from trying to connect to the Hugging Face Hub. This ensures the system only attempts to load models that are already stored in the host's local cache.
 
+### 7.7 Advanced Distributed OS Features
+
+UniKernel 2.1 introduces deep integration with the GPU Host to overcome microcontroller hardware limits:
+
+- **Virtual Swap RAM**: When UniKernel detects high memory pressure, it automatically "swaps" non-critical data (like Command History) to the GPU Host's memory, freeing up local heap.
+- **UniFS Remote Mounting**: Access a designated `.unifs` folder in your User Home directory (e.g., `C:\Users\Name\.unifs` or `/home/name/.unifs`). Use `accel mount welcome.sh` to read and execute remote scripts as if they were local.
+- **Edge-AI Pipeline**: Stream complex sensor or input data to pre-defined AI models on the host. This allows real-time inference (Object detection, Signal classification) without the ESP8266 needing to know the model weights.
+
 ---
 
 
@@ -278,4 +290,4 @@ UniKernel follows a structured multi-script boot sequence to ensure system stabi
 To prevent remote attackers from establishing persistence, UniKernel implements **System Immutability** for critical boot files:
 - **Protected Files**: `0rc.sh`, `1rc.sh`, `2rc.sh`.
 - **Restriction**: These files can **ONLY** be created, modified, or deleted through a **Serial Console session** (Physical access).
-- **Remote Access**: Any attempt to modify these files via Telnet, SSH, or Web Dashboard will be rejected with a `403 Forbidden` error, even if the user is authenticated.
+- **Remote Access**: Any attempt to modify these files via Telnet or Web Dashboard will be rejected with a `403 Forbidden` error, even if the user is authenticated.

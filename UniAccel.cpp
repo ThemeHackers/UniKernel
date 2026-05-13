@@ -1,4 +1,6 @@
 #include "UniAccel.h"
+#include "include/common.h"
+#include "include/commands.h"
 #include <ESP8266mDNS.h>
 
 extern void kprint(const char *s);
@@ -36,12 +38,21 @@ extern RAMFile vfs[MAX_FILES];
 extern char currentPath[PATH_LEN];
 bool accelAnimating = false;
 bool accelChatMode = false;
-char currentModelName[32] = "tinyllama";
+char currentModelName[32] = "None";
+bool accelModelLoaded = false;
+int gpuTemp = 0;
+int gpuUtil = 0;
+int gpuMem = 0;
+float gpuPwr = 0.0f;
+int gpuClk = 0;
 unsigned long lastFrameTime = 0;
 
-bool accelModelLoaded = false;
 unsigned long lastRequestStartTime = 0;
 static uint8_t renderBuffer[1024];
+bool aiBlockStarted = false;
+bool aiInCodeBlock = false;
+bool aiLastWasNL = true;
+int aiBtCount = 0;
 
 uint8_t hex2int(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -92,11 +103,15 @@ void discoverAccelHost() {
   }
 }
 void handleAccelCommand(char *args) {
-  char sub[16] = {0};
-  sscanf(args, "%15s", sub);
-  char *subArgs = strchr(args, ' ');
-  if (subArgs)
-    subArgs++;
+  char *argv[8];
+  int argc = kParseArgs(args, argv, 8);
+  if (argc == 0) {
+    kprintln(F("Usage: accel [subcommand] [args]"));
+    return;
+  }
+
+  char *sub = argv[0];
+  char *subArgs = (argc > 1) ? argv[1] : NULL;
 
   if (strcmp_P(sub, PSTR("chat")) == 0) {
     if (!accelConnected) {
@@ -480,7 +495,12 @@ void handleAccelCommand(char *args) {
     for (size_t i = 0; i < len; i++)
       buffer[i] ^= XOR_KEY;
     webSocket.sendBIN(buffer, len);
-    kprintln(F("Thinking..."));
+    kprintln();
+    kprintColor(CLR_MAG);
+    kprint(F(" ✦ "));
+    kprintColor(CLR_CYN);
+    kprintln(F("Consulting Neural Engine..."));
+    kprintColor(CLR_RST);
   } else if (strcmp_P(sub, PSTR("physics")) == 0) {
     if (!accelConnected) {
       kprintln(F("Not connected."));
@@ -528,15 +548,67 @@ void handleAccelCommand(char *args) {
     lastRequestStartTime = millis();
     webSocket.sendBIN(buffer, len);
     kprintln(F("Requesting Cluster Node List..."));
+  } else if (strcmp_P(sub, PSTR("swap")) == 0) {
+    if (!accelConnected || !subArgs) return;
+    char* key = strtok(subArgs, " ");
+    char* val = strtok(NULL, "");
+    static JsonDocument doc; doc.clear();
+    if (val) {
+        doc["cmd"] = "swap_out"; doc["key"] = key; doc["data"] = val;
+        kprint(F("Swapping out: ")); kprintln(key);
+    } else {
+        doc["cmd"] = "swap_in"; doc["key"] = key;
+        kprint(F("Requesting swap in: ")); kprintln(key);
+    }
+    uint8_t buffer[512]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    webSocket.sendBIN(buffer, len);
+  } else if (strcmp_P(sub, PSTR("mount")) == 0) {
+    if (!accelConnected || !subArgs) return;
+    char* mode = strtok(subArgs, " ");
+    char* path = strtok(NULL, "");
+    static JsonDocument doc; doc.clear();
+    if (path && strcmp(mode, "ls") == 0) {
+        doc["cmd"] = "fs_ls"; doc["path"] = path;
+        kprint(F("Remote LS: ")); kprintln(path);
+    } else {
+        doc["cmd"] = "fs_read"; doc["path"] = path ? path : mode;
+        kprint(F("Remote Cat: ")); kprintln(path ? path : mode);
+    }
+    uint8_t buffer[256]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    webSocket.sendBIN(buffer, len);
+  } else if (strcmp_P(sub, PSTR("pipe")) == 0) {
+    if (!accelConnected || !subArgs) return;
+    char* model = strtok(subArgs, " ");
+    char* data = strtok(NULL, " ");
+    char* callback = strstr(data ? data : "", "--on-match");
+    if (callback) {
+        *callback = '\0';
+        callback = kTrim(callback + 10);
+        if (callback[0] == '"') {
+            callback++;
+            char* end = strchr(callback, '"');
+            if (end) *end = '\0';
+        }
+    }
+    static JsonDocument doc; doc.clear();
+    doc["cmd"] = "edge_pipe"; doc["model"] = model; doc["data"] = data ? data : "";
+    if (callback) doc["on_match"] = callback;
+    uint8_t buffer[1024]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    for (size_t i = 0; i < len; i++) buffer[i] ^= XOR_KEY;
+    webSocket.sendBIN(buffer, len);
+    kprintln(F("Pushing data to Edge-AI Pipeline..."));
   } else {
-
-    kprintColor(CLR_CYN);
-    kprint(F(""));
+    kprintColor(CLR_MAG);
+    kprintln(F("╭─── UniAccel GPU Help ───────────────────────────────╮"));
+    kprint(F("│ ")); kprintColor(CLR_CYN); kprint(F("CORE       ")); kprintColor(CLR_RST); kprintln(F("connect, discover, status, disconnect  │"));
+    kprint(F("│ ")); kprintColor(CLR_YLW); kprint(F("AI         ")); kprintColor(CLR_RST); kprintln(F("load, unload, ask, chat, hf            │"));
+    kprint(F("│ ")); kprintColor(CLR_GRN); kprint(F("STORAGE    ")); kprintColor(CLR_RST); kprintln(F("swap, mount, pipe, cluster             │"));
+    kprint(F("│ ")); kprintColor(CLR_BLU); kprint(F("KERNELS    ")); kprintColor(CLR_RST); kprintln(F("physics, signal, bench, list           │"));
+    kprintColor(CLR_MAG);
+    kprintln(F("╰─────────────────────────────────────────────────────╯"));
     kprintColor(CLR_RST);
-    kprintln(
-        F("Usage: accel "
-          "[connect/load/ask/chat/animate/stop/list/unload/discover/research/bench/"
-          "status/physics/signal/cluster/disconnect]"));
   }
 }
 
@@ -572,33 +644,70 @@ void onGpuResponse(uint8_t *payload, size_t length) {
 
     if (res.containsKey("telemetry") && !accelChatMode) {
       JsonObject tel = res["telemetry"];
+      gpuTemp = tel["temp"].as<int>();
+      gpuUtil = tel["util"].as<int>();
+      gpuMem = tel["mem"].as<int>();
+      gpuPwr = tel["pwr"].as<float>();
+      gpuClk = tel["clk"].as<int>();
+
       kprintColor(CLR_CYN);
       kprint(F("[GPU] "));
       kprintColor(CLR_RST);
       kprintColor(CLR_RED);
-      kprint(tel["temp"].as<int>());
+      kprint(gpuTemp);
       kprint(F("°C"));
       kprintColor(CLR_RST);
       kprint(F(" | "));
       kprintColor(CLR_GRN);
-      kprint(tel["util"].as<int>());
+      kprint(gpuUtil);
       kprint(F("% Util"));
       kprintColor(CLR_RST);
       kprint(F(" | "));
       kprintColor(CLR_BLU);
-      kprint(tel["mem"].as<int>());
+      kprint(gpuMem);
       kprint(F("MB"));
       kprintColor(CLR_RST);
       kprint(F(" | "));
       kprintColor(CLR_YLW);
-      kprint(tel["pwr"].as<float>());
+      kprint(gpuPwr);
       kprint(F("W"));
       kprintColor(CLR_RST);
       kprint(F(" | "));
       kprintColor(CLR_MAG);
-      kprint(tel["clk"].as<int>());
-      kprintln(F("MHz"));
+      kprint(gpuClk);
+      kprint(F("MHz"));
       kprintColor(CLR_RST);
+      kprintln();
+    }
+
+    if (res.containsKey("cmd")) {
+        const char* cmd = res["cmd"];
+        if (strcmp(cmd, "swap_ack") == 0) {
+            kprint(F("[SWAP] Ack for key: ")); kprintln(res["key"].as<const char*>());
+        } else if (strcmp(cmd, "swap_data") == 0) {
+            kprint(F("[SWAP] Received: ")); kprintln(res["data"].as<const char*>());
+        } else if (strcmp(cmd, "fs_content") == 0) {
+            kprintln(F("╭─── Remote File Content ───────────────────────────"));
+            String content = res["data"].as<String>();
+            kprintln(content.c_str());
+            kprintln(F("╰───────────────────────────────────────────────────"));
+        } else if (strcmp(cmd, "fs_list") == 0) {
+            kprint(F("Remote Directory: ")); kprintln(res["path"].as<const char*>());
+            JsonArray files = res["files"].as<JsonArray>();
+            for (JsonVariant f : files) {
+                kprint(F("  - ")); kprintln(f.as<const char*>());
+            }
+        } else if (strcmp(cmd, "edge_result") == 0) {
+            kprintColor(CLR_YLW);
+            kprint(F("[EDGE-AI] "));
+            kprintColor(CLR_RST);
+            kprintln(res["data"].as<const char*>());
+            if (res.containsKey("callback") && !res["callback"].isNull()) {
+                const char* cb = res["callback"];
+                kprint(F("[PIPE] Triggering callback: ")); kprintln(cb);
+                dispatchCommand((char*)cb, true);
+            }
+        }
     }
     if (res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0) {
       int w = res.containsKey("width") ? res["width"].as<int>() : 0;
@@ -746,34 +855,56 @@ void onGpuResponse(uint8_t *payload, size_t length) {
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_delta") == 0) {
         if (res.containsKey("data")) {
             String delta = res["data"].as<String>();
-            static bool inCodeBlock = false;
-            static int btCount = 0;
+
+            if (!aiBlockStarted) {
+                kprintColor(CLR_CYN);
+                kprintln(F("╭─── AI Response ───────────────────────────────────"));
+                kprintColor(CLR_RST);
+                aiBlockStarted = true;
+                aiLastWasNL = true;
+                aiInCodeBlock = false;
+                aiBtCount = 0;
+            }
             
             for (int i=0; i<delta.length(); i++) {
+                if (aiLastWasNL) {
+                    kprintColor(CLR_CYN);
+                    kprint(F("│ "));
+                    kprintColor(CLR_RST);
+                    if (aiInCodeBlock) kprintColor(CLR_YLW);
+                    aiLastWasNL = false;
+                }
+
                 char c = delta[i];
                 if (c == '`') {
-                    btCount++;
-                    if (btCount == 3) {
-                        inCodeBlock = !inCodeBlock;
-                        btCount = 0;
-                        kprintColor(inCodeBlock ? CLR_YLW : CLR_GRN);
+                    aiBtCount++;
+                    if (aiBtCount == 3) {
+                        aiInCodeBlock = !aiInCodeBlock;
+                        aiBtCount = 0;
+                        kprintColor(aiInCodeBlock ? CLR_YLW : CLR_RST);
                     }
                     kprint(c);
                 } else {
-                    btCount = 0;
+                    aiBtCount = 0;
                     kprint(c);
                     if (c == '\n') {
                         kprint('\r');
-                        if (inCodeBlock) kprint(F("  "));
+                        aiLastWasNL = true;
+                        if (aiInCodeBlock) kprintColor(CLR_RST);
                     }
                 }
             }
         }
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_end") == 0) {
-        kprintln();
         kprintColor(CLR_CYN);
-        kprintln(F("-------------------------------"));
+        kprintln(F("╰───────────────────────────────────────────────────"));
         kprintColor(CLR_RST);
+        
+        aiBlockStarted = false;
+        aiInCodeBlock = false;
+        aiLastWasNL = true;
+        aiBtCount = 0;
+        
         if (accelChatMode) redrawPrompt();
     } else {
       if (res.containsKey("message")) {

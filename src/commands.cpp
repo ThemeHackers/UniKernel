@@ -23,18 +23,28 @@ extern void runScript(const char *content);
 #if defined(ESP8266)
 #include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
+#include <ESP8266WebServer.h>
+#include <ArduinoOTA.h>
+#endif
+
+#if defined(ESP32)
+#include <WebServer.h>
+#include <ArduinoOTA.h>
 #endif
 extern bool accelChatMode;
 extern bool telnetEnabled;
 extern bool webEnabled;
 extern bool otaEnabled;
+extern unsigned long otaEndTime;
 extern bool btEnabled;
-extern bool sshEnabled;
+extern bool accelConnected;
+extern char accelHost[];
 extern WiFiServer telnetServer;
 extern WiFiClient telnetClient;
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-extern WiFiServerSecure sshServer;
-extern WiFiClientSecure sshClient;
+#if defined(ESP8266)
+extern ESP8266WebServer webServer;
+#elif defined(ESP32)
+extern WebServer webServer;
 #endif
 extern void redrawPrompt();
 
@@ -116,9 +126,9 @@ void registerCommands() {
     commandTable.emplace_back("ping", handle_ping, false, "Ping a host");
     commandTable.emplace_back("wget", handle_wget, true, "Download from URL");
     commandTable.emplace_back("ntp", handle_ntp, false, "Sync time via NTP");
+    commandTable.emplace_back("ota", handle_ota, true, "Toggle OTA updates");
     commandTable.emplace_back("telnet", handle_telnet, true, "Toggle Telnet server");
     commandTable.emplace_back("web", handle_web, true, "Toggle Web server");
-    commandTable.emplace_back("ssh", handle_ssh, true, "Toggle SSH server");
     commandTable.emplace_back("bt", handle_bt, true, "Toggle Bluetooth");
     commandTable.emplace_back("netstat", handle_netstat, false, "Show network status");
     commandTable.emplace_back("cron", handle_cron, true, "Manage cron tasks");
@@ -152,10 +162,10 @@ void dispatchCommand(char *line, bool fromSerial) {
 
     for (const auto& c : commandTable) {
         if (strcmp(cmd, c.name) == 0) {
-            bool currentAuth = fromSerial ? serialAuthenticated : (telnetAuthenticated || sshAuthenticated);
+            bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
             
 
-            if (!fromSerial && (telnetAuthenticated || sshAuthenticated)) {
+            if (!fromSerial && telnetAuthenticated) {
                 if (!isTelnetSafeCommand(cmd)) {
                     sendResponse(false, 403, "Command not allowed via network");
                     free(cmdLine);
@@ -533,7 +543,7 @@ void handle_help(char *args, bool fromSerial) {
         const char* catProc[] = {"ps", "top", "kill", "cron", "trigger", "bg", "sh", nullptr};
         const char* catNet[] = {"wifi", "ifconfig", "netstat", "ping", "wget", "mqtt", nullptr};
         const char* catHw[] = {"on", "off", "pinmode", "write", "read", "i2c", "pwm", "gpio", nullptr};
-        const char* catSec[] = {"login", "logout", "passwd", "whoami", "firewall", "ota", "telnet", "web", "ssh", "bt", nullptr};
+        const char* catSec[] = {"login", "logout", "passwd", "whoami", "firewall", "ota", "telnet", "web", "bt", nullptr};
         const char* catMisc[] = {"help", "clear", "color", "alias", "env", "export", "delay", "accel", nullptr};
 
         printCategory(F("[ Filesystem & VFS ]"), catFs);
@@ -895,12 +905,14 @@ void handle_hwinfo(char *args, bool fromSerial) {
 }
 
 void handle_logout(char *args, bool fromSerial) {
+    accelChatMode = false;
     if (fromSerial) serialAuthenticated = false;
     else telnetAuthenticated = false;
     sendResponse(true, 200, "Logged out");
 }
 
 void handle_exit(char *args, bool fromSerial) {
+    accelChatMode = false;
     sendResponse(true, 200, "Exiting terminal");
     if (fromSerial) {
         serialAuthenticated = false;
@@ -981,7 +993,7 @@ void handle_color(char *args, bool fromSerial) {
 }
 
 void handle_whoami(char *args, bool fromSerial) {
-    bool currentAuth = fromSerial ? serialAuthenticated : (telnetAuthenticated || sshAuthenticated);
+    bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
     sendResponse(true, 200, currentAuth ? "root" : "guest");
 }
 
@@ -996,7 +1008,7 @@ void handle_uname(char *args, bool fromSerial) {
 }
 
 void handle_passwd(char *args, bool fromSerial) {
-    bool currentAuth = fromSerial ? serialAuthenticated : (telnetAuthenticated || sshAuthenticated);
+    bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
     if (!fromSerial && !currentAuth) {
         sendResponse(false, 401, "Authentication required");
         return;
@@ -1348,13 +1360,45 @@ void handle_firewall(char *args, bool fromSerial) {
 }
 
 void handle_ota(char *args, bool fromSerial) {
-    if (strcmp(args, "on") == 0) {
-#if defined(ESP8266) || defined(ESP32)
+    char* sub = strtok(args, " ");
+    char* val = strtok(NULL, "");
 
-        sendResponse(true, 200, "OTA is ready");
-#endif
+    if (!sub) {
+        sendResponse(false, 400, "Usage: ota [on|setpass <pass>]");
+        return;
+    }
+
+    if (strcmp(sub, "setpass") == 0 && val) {
+        if (strlen(val) < 6) {
+            sendResponse(false, 400, "Password too short (min 6)");
+            return;
+        }
+        char hash[33];
+        MD5Builder md5;
+        md5.begin();
+        md5.add(val);
+        md5.calculate();
+        md5.getChars(hash);
+        
+        EEPROM.put(EEPROM_OTA_PASS_ADDR, hash);
+        EEPROM.commit();
+        
+        ArduinoOTA.setPasswordHash(hash);
+        sendResponse(true, 200, "OTA Password updated and hashed");
+    } else if (strcmp(sub, "on") == 0) {
+        char hash[33];
+        EEPROM.get(EEPROM_OTA_PASS_ADDR, hash);
+        if (hash[0] == 0xFF || hash[0] == 0x00) {
+            sendResponse(false, 403, "Set OTA password first: ota setpass <pass>");
+            return;
+        }
+        otaEnabled = true;
+        otaEndTime = millis() + (3 * 60 * 1000); // 3 minutes window
+        ArduinoOTA.begin();
+        addDmesg(F("OTA: Server Started (3m window)"));
+        sendResponse(true, 200, "OTA is enabled for 3 minutes");
     } else {
-        sendResponse(false, 400, "Usage: ota on");
+        sendResponse(false, 400, "Usage: ota [on|setpass <pass>]");
     }
 }
 
@@ -1644,27 +1688,14 @@ void handle_telnet(char *args, bool fromSerial) {
 }
 
 void handle_web(char *args, bool fromSerial) {
-    if (strcmp(args, "on") == 0) webEnabled = true;
-    else webEnabled = false;
-    sendResponse(true, 200, webEnabled ? "Web Dashboard ON" : "Web Dashboard OFF");
-}
-
-void handle_ssh(char *args, bool fromSerial) {
-#ifndef PRODUCTION_BUILD
     if (strcmp(args, "on") == 0) {
-        sshEnabled = true;
-        sshServer.begin();
-        addDmesg(F("SSH: Server Started on port 22"));
-        sendResponse(true, 200, "SSH ON");
+        webEnabled = true;
+        webServer.begin();
     } else {
-        sshEnabled = false;
-        if (sshClient) sshClient.stop();
-        addDmesg(F("SSH: Server Stopped"));
-        sendResponse(true, 200, "SSH OFF");
+        webEnabled = false;
+        webServer.stop();
     }
-#else
-    sendResponse(false, 403, "SSH disabled in production");
-#endif
+    sendResponse(true, 200, webEnabled ? "Web Dashboard ON" : "Web Dashboard OFF");
 }
 
 void handle_bt(char *args, bool fromSerial) {
@@ -1677,12 +1708,45 @@ void handle_bt(char *args, bool fromSerial) {
 }
 
 void handle_netstat(char *args, bool fromSerial) {
+    kprintln(F("╭───────┬──────┬────────────┬────────────┬────────────────╮"));
+    kprintln(F("│ Proto │ Port │ Service    │ Status     │ Remote Host    │"));
+    kprintln(F("├───────┼──────┼────────────┼────────────┼────────────────┤"));
+    
+    // Telnet
+    kprint(F("│ TCP   │ 23   │ Telnet     │ "));
+    if (telnetEnabled) { kprintColor(CLR_GRN); kprint(F("LISTENING  ")); }
+    else { kprintColor(CLR_RED); kprint(F("OFFLINE    ")); }
+    kprintColor(CLR_RST); kprintln(F("│ -              │"));
+
+    // Web
+    kprint(F("│ TCP   │ 80   │ Web/API    │ "));
+    if (webEnabled) { kprintColor(CLR_GRN); kprint(F("LISTENING  ")); }
+    else { kprintColor(CLR_RED); kprint(F("OFFLINE    ")); }
+    kprintColor(CLR_RST); kprintln(F("│ -              │"));
+
+    // OTA
+    kprint(F("│ UDP   │ 8266 │ OTA Update │ "));
+    if (otaEnabled) { kprintColor(CLR_YLW); kprint(F("ACTIVE     ")); }
+    else { kprintColor(CLR_WHT); kprint(F("IDLE       ")); }
+    kprintColor(CLR_RST); kprintln(F("│ -              │"));
+
+    // UniAccel
+    kprint(F("│ WS    │ 81   │ UniAccel   │ "));
+    if (accelConnected) { kprintColor(CLR_GRN); kprint(F("CONNECTED  ")); }
+    else { kprintColor(CLR_RED); kprint(F("DISCON     ")); }
+    kprintColor(CLR_RST); kprint(F("│ "));
+    if (accelConnected) kprintln(accelHost);
+    else kprintln(F("-              │"));
+
+    kprintln(F("╰───────┴──────┴────────────┴────────────┴────────────────╯"));
+
     static JsonDocument data;
     data.clear();
     data["telnet"] = telnetEnabled ? 23 : 0;
     data["http"] = webEnabled ? 80 : 0;
     data["ota"] = 8266;
-    sendResponse(true, 200, "Network Services", &data);
+    data["accel"] = accelConnected;
+    sendResponse(true, 200, "Network Status Displayed", &data);
 }
 
 void handle_cron(char *args, bool fromSerial) {

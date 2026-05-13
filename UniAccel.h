@@ -20,6 +20,11 @@ extern bool accelAnimating;
 extern bool accelChatMode;
 extern char currentModelName[32];
 extern bool accelModelLoaded;
+extern int gpuTemp;
+extern int gpuUtil;
+extern int gpuMem;
+extern float gpuPwr;
+extern int gpuClk;
 
 extern const char CLR_RST[];
 extern const char CLR_RED[];

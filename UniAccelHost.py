@@ -75,6 +75,13 @@ nv_handle = None
 current_hf_model = None
 stop_requested = False
 PARTICLE_STATES = {}
+SWAP_STORE = {}
+MOUNT_DIR = os.path.join(os.path.expanduser("~"), ".unifs")
+
+if not os.path.exists(MOUNT_DIR):
+    os.makedirs(MOUNT_DIR)
+    with open(os.path.join(MOUNT_DIR, "welcome.sh"), "w") as f:
+        f.write('echo "Welcome to UniKernel Remote Mount!"\nls /sys\n')
 
 
 KERNEL_CACHE = {}
@@ -451,7 +458,73 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 import gc, torch
                 gc.collect()
                 torch.cuda.empty_cache()
-                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": "Unloaded"}), loop)
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": "GPU Models Unloaded"}), loop)
+
+        elif cmd == "swap_out":
+            key = req.get("key")
+            data = req.get("data")
+            SWAP_STORE[f"{addr}_{key}"] = data
+            console.print(f"[bold blue][SWAP][/bold blue] Stored [cyan]{len(data)} bytes[/cyan] for [dim]{key}[/dim]")
+            asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "swap_ack", "key": key}), loop)
+
+        elif cmd == "swap_in":
+            key = req.get("key")
+            data = SWAP_STORE.get(f"{addr}_{key}", None)
+            if data is not None:
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "swap_data", "key": key, "data": data}), loop)
+            else:
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "Swap key not found"}), loop)
+
+        elif cmd == "fs_read":
+            path = req.get("path")
+            safe_path = os.path.abspath(os.path.join(MOUNT_DIR, path.lstrip("/")))
+            if not safe_path.startswith(os.path.abspath(MOUNT_DIR)):
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "Access Denied"}), loop)
+            elif os.path.exists(safe_path) and os.path.isfile(safe_path):
+                with open(safe_path, "r", encoding="utf-8", errors="ignore") as f: content = f.read()
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "fs_content", "path": path, "data": content}), loop)
+            else:
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "File not found"}), loop)
+
+        elif cmd == "fs_ls":
+            path = req.get("path", "")
+            safe_path = os.path.abspath(os.path.join(MOUNT_DIR, path.lstrip("/")))
+            if not safe_path.startswith(os.path.abspath(MOUNT_DIR)):
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "Access Denied"}), loop)
+            elif os.path.exists(safe_path) and os.path.isdir(safe_path):
+                files = os.listdir(safe_path)
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "cmd": "fs_list", "path": path, "files": files}), loop)
+            else:
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "Directory not found"}), loop)
+
+        elif cmd == "fs_write":
+            path = req.get("path")
+            data = req.get("data")
+            safe_path = os.path.abspath(os.path.join(MOUNT_DIR, path.lstrip("/")))
+            if not safe_path.startswith(os.path.abspath(MOUNT_DIR)):
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "error", "message": "Access Denied"}), loop)
+            else:
+                with open(safe_path, "w", encoding="utf-8") as f: f.write(data)
+                asyncio.run_coroutine_threadsafe(websocket_send_func({"status": "ok", "message": f"Saved to {path}"}), loop)
+
+        elif cmd == "edge_pipe":
+            model = req.get("model", "default")
+            input_data = req.get("data", "")
+            on_match = req.get("on_match", None)
+            
+            # More flexible AI processing simulation
+            console.print(f"[bold magenta][PIPE][/bold magenta] Model: [cyan]{model}[/cyan] | Data: [dim]{len(input_data)} bytes[/dim]")
+            
+            # Logic simulation: if "alert" in data, trigger callback
+            match_found = "alert" in input_data.lower()
+            res_msg = f"[EdgeAI:{model}] Result: {'MATCH' if match_found else 'NOMATCH'}"
+            
+            asyncio.run_coroutine_threadsafe(websocket_send_func({
+                "status": "ok", 
+                "cmd": "edge_result", 
+                "data": res_msg, 
+                "callback": on_match if match_found else None
+            }), loop)
     except Exception as e:
         msg = str(e)
         if "403" in msg or "gated" in msg.lower():

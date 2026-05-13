@@ -50,7 +50,6 @@ extern bool useColor;
 extern char currentPath[PATH_LEN];
 extern bool serialAuthenticated;
 extern bool telnetAuthenticated;
-extern bool sshAuthenticated;
 extern uint8_t loginFailCount;
 extern bool isLockedOut;
 extern bool isSerialSession;
@@ -124,6 +123,7 @@ void kprintColor(const char *code);
 
 void sendResponse(bool ok, int code, const char *message, JsonDocument *data = nullptr);
 
+int kParseArgs(char *line, char **argv, int maxArgs);
 char *kTrim(char *s);
 void stripQuotes(char *s);
 void toLowercase(char *s);
