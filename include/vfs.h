@@ -12,7 +12,7 @@ typedef struct {
   uint8_t ownerId;
 } RAMFile;
 
-extern RAMFile vfs[16];
+extern RAMFile vfs[MAX_FILES];
 
 void initFS();
 bool isValidFsName(const char *name);

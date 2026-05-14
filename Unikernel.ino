@@ -779,7 +779,7 @@ ICACHE_FLASH_ATTR void logResetReason() {
 
   int idx = findFile("crash.log", "/sys");
   if (idx == -1) {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
       if (!(vfs[i].flags & FLAG_ACTIVE)) {
         idx = i;
         strcpy(vfs[idx].name, "crash.log");
@@ -878,10 +878,10 @@ ICACHE_FLASH_ATTR void setup() {
   int addr = EEPROM_VFS_ADDR;
   EEPROM.get(addr, magic);
   if (magic == VFS_MAGIC) {
-    EEPROM.get(addr + 2, vfs);
+    EEPROM.get(EEPROM_VFS_DATA_ADDR, vfs);
     addDmesg(F("Filesystem restored from EEPROM"));
     bool hasSys = false;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
       if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "sys") == 0)
         hasSys = true;
     }
@@ -1353,7 +1353,7 @@ ICACHE_FLASH_ATTR void loop() {
 
   static char lastChar = 0;
   static bool inEscSeq = false;
-  static int escState = 0;
+
   char c = 0;
   bool hasInput = false;
   bool fromSerial = false;
@@ -1715,9 +1715,7 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
     return;
   }
 
-  char *scriptLine = (char *)malloc(MAX_INPUT_LEN);
-  if (!scriptLine)
-    return;
+  char scriptLine[MAX_INPUT_LEN];
   shellDepth++;
 
   int ci = 0, li = 0, lineNum = 0;
@@ -1741,7 +1739,7 @@ ICACHE_FLASH_ATTR void runScript(const char *content) {
       scriptLine[li++] = c;
     }
   }
-  free(scriptLine);
+
   shellDepth--;
 }
 ICACHE_FLASH_ATTR void taskBlink() {

@@ -290,7 +290,7 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
     static JsonDocument data;
     data.clear();
     JsonArray arr = data.to<JsonArray>();
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
       if ((vfs[i].flags & FLAG_ACTIVE) &&
           strcmp(vfs[i].parentDir, currentPath) == 0) {
         JsonObject obj = arr.add<JsonObject>();
@@ -305,7 +305,7 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
   bool empty = true;
   int fileCount = 0;
 
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < MAX_FILES; i++) {
     if (vfs[i].flags & FLAG_ACTIVE) {
       bool pathMatch = (strcmp(vfs[i].parentDir, currentPath) == 0);
 
@@ -448,7 +448,7 @@ ICACHE_FLASH_ATTR void handle_mkdir(char *args, bool fromSerial) {
     sendResponse(false, 400, "Invalid name");
     return;
   }
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < MAX_FILES; i++) {
     if (!(vfs[i].flags & FLAG_ACTIVE)) {
       safeStrncpy(vfs[i].name, args, NAME_LEN);
       safeStrncpy(vfs[i].parentDir, currentPath, PATH_LEN);
@@ -468,7 +468,7 @@ ICACHE_FLASH_ATTR void handle_touch(char *args, bool fromSerial) {
     sendResponse(false, 400, "Invalid name");
     return;
   }
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < MAX_FILES; i++) {
     if (!(vfs[i].flags & FLAG_ACTIVE)) {
       safeStrncpy(vfs[i].name, args, NAME_LEN);
       safeStrncpy(vfs[i].parentDir, currentPath, PATH_LEN);
@@ -534,7 +534,7 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
 
     int idx = findFile(filename, currentPath);
     if (idx == -1) {
-      for (int i = 0; i < 16; i++) {
+      for (int i = 0; i < MAX_FILES; i++) {
         if (!(vfs[i].flags & FLAG_ACTIVE)) {
           idx = i;
           safeStrncpy(vfs[idx].name, filename, NAME_LEN);
@@ -817,7 +817,7 @@ ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
     sendResponse(false, 403, "Protected system file (Serial access required)");
     return;
   }
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < MAX_FILES; i++) {
     if (!(vfs[i].flags & FLAG_ACTIVE)) {
       memcpy(&vfs[i], &vfs[sIdx], sizeof(RAMFile));
       safeStrncpy(vfs[i].name, dst, NAME_LEN);
@@ -1390,7 +1390,7 @@ void handle_sys(char *args, bool fromSerial) {
     kprintln(score);
   } else if (strcmp(args, "backup") == 0) {
     kprintln(F("--- UniKernel VFS Backup Script ---"));
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
       if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR)) {
         kprint(F("echo \""));
         kprint(vfs[i].content);
@@ -1486,7 +1486,7 @@ void handle_info(char *args, bool fromSerial) {
 void handle_save(char *args, bool fromSerial) {
   uint16_t magic = VFS_MAGIC;
   EEPROM.put(EEPROM_VFS_ADDR, magic);
-  EEPROM.put(EEPROM_VFS_ADDR + 2, vfs);
+  EEPROM.put(EEPROM_VFS_DATA_ADDR, vfs);
   EEPROM.commit();
   sendResponse(true, 200, "VFS saved to EEPROM");
 }
@@ -1495,7 +1495,7 @@ void handle_load(char *args, bool fromSerial) {
   uint16_t magic;
   EEPROM.get(EEPROM_VFS_ADDR, magic);
   if (magic == VFS_MAGIC) {
-    EEPROM.get(EEPROM_VFS_ADDR + 2, vfs);
+    EEPROM.get(EEPROM_VFS_DATA_ADDR, vfs);
     sendResponse(true, 200, "VFS loaded from EEPROM");
   } else {
     sendResponse(false, 404, "No saved VFS found");
@@ -2101,7 +2101,7 @@ void handle_recovery(char *args, bool fromSerial) {
     sendResponse(true, 200, "Factory Reset: Password cleared. Please setup.");
     addDmesg(F("Recovery: Factory Reset triggered"));
   } else if (strcmp(args, "purge") == 0) {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
       if (vfs[i].flags & FLAG_ACTIVE) {
         if (!(vfs[i].flags & FLAG_ISDIR)) {
             vfs[i].flags &= ~FLAG_ACTIVE;

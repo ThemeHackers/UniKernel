@@ -5,9 +5,9 @@
 #include <ArduinoJson.h>
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-#define MAX_FILES 16
-#define CONTENT_LEN 128
-#define DMESG_LINES 6
+#define MAX_FILES 12
+#define CONTENT_LEN 256
+#define DMESG_LINES 8
 #define MAX_INPUT_LEN 256
 #define MAX_TASKS 6
 #else
@@ -43,6 +43,7 @@ extern bool useColor;
 #define EEPROM_FAIL_COUNT_ADDR 566
 #define EEPROM_BOOT_FILE_ADDR 580
 #define EEPROM_VFS_ADDR 1024
+#define EEPROM_VFS_DATA_ADDR (EEPROM_VFS_ADDR + 2)
 #define VFS_MAGIC 0x55AA
 
 #define PASS_SALT_LEN 16

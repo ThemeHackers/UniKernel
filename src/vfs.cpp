@@ -1,6 +1,6 @@
 #include "../include/vfs.h"
 
-RAMFile vfs[16];
+RAMFile vfs[MAX_FILES];
 char currentPath[PATH_LEN] = "/";
 
 void initFS() {
@@ -11,7 +11,7 @@ void initFS() {
 
     for (int d = 0; d < 4; d++) {
         bool found = false;
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; i < MAX_FILES; i++) {
             if (!(vfs[i].flags & FLAG_ACTIVE)) {
                 strncpy(vfs[i].name, sysDirs[d], NAME_LEN - 1);
                 vfs[i].name[NAME_LEN - 1] = '\0';
@@ -33,7 +33,7 @@ void initFS() {
 
 
     bool errorLogCreated = false;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
         if (!(vfs[i].flags & FLAG_ACTIVE)) {
             strcpy(vfs[i].name, "error.log");
             strcpy(vfs[i].parentDir, "/sys");
@@ -48,7 +48,7 @@ void initFS() {
 
 
     int activeFiles = 0;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
         if (vfs[i].flags & FLAG_ACTIVE) {
             activeFiles++;
         }
@@ -80,7 +80,7 @@ bool isValidFsName(const char *name) {
 }
 
 int findFile(const char *name, const char *parentDir) {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_FILES; i++) {
         if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, name) == 0 &&
             strcmp(vfs[i].parentDir, parentDir) == 0) {
             return i;
