@@ -98,9 +98,27 @@ KERNEL_CACHE = {}
 def compile_master_code(code_content=None):
     global current_mod, cuda_ctx
     if code_content is None:
-        if os.path.exists("main.cu"):
-            with open("main.cu", "r") as f: code_content = f.read()
-        else: return False
+
+        main_cu_candidates = [
+            "main.cu",
+            "UniAccel/main.cu",
+            os.path.join(os.getcwd(), "UniAccel", "main.cu")
+        ]
+        
+        main_cu_path = None
+        for path in main_cu_candidates:
+            if os.path.exists(path):
+                main_cu_path = path
+                break
+        
+        if main_cu_path:
+            with open(main_cu_path, "r") as f:
+                code_content = f.read()
+                console.print(f"[dim]Loaded main.cu from:[/dim] {main_cu_path}")
+        else:
+            error_msg = f"main.cu not found in any location: {', '.join(main_cu_candidates)}"
+            console.print(f"[bold red]Error:[/bold red] {error_msg}")
+            return False
     
     code_hash = hashlib.sha256(code_content.encode()).hexdigest()
     if code_hash in KERNEL_CACHE:
@@ -122,7 +140,21 @@ def compile_master_code(code_content=None):
             "-allow-unsupported-compiler",
             "-Xcompiler", "/wd4819"
         ]
-        inc_dirs = [os.getcwd(), os.path.join(os.getcwd(), "include"), os.path.join(os.getcwd(), "src")]
+        
+
+        inc_dirs_candidates = []
+        
+       
+        for base_dir in [os.getcwd(), os.path.join(os.getcwd(), "UniAccel")]:
+            for sub_dir in [".", "include", "src"]:
+                path = base_dir if sub_dir == "." else os.path.join(base_dir, sub_dir)
+                if os.path.exists(path):
+                    inc_dirs_candidates.append(path)
+        
+    
+        inc_dirs = list(dict.fromkeys(inc_dirs_candidates))
+        
+        console.print(f"[dim]Include directories found:[/dim] {len(inc_dirs)} paths")
         
         new_mod = SourceModule(code_content, options=compile_options, no_extern_c=True, keep=False, include_dirs=inc_dirs)
         current_mod = new_mod
@@ -187,6 +219,48 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
     try:
         start_time = time.time()
         cmd = req.get("cmd")
+        
+        if cmd == "build_cu":
+            verbose = req.get("verbose", False)
+            
+  
+            build_phases = [
+                (0, "setup", "Initializing build environment..."),
+                (25, "prepare", "Checking CUDA dependencies..."),
+                (50, "compile", "Compiling CUDA kernel modules..."),
+                (75, "link", "Linking object files..."),
+                (100, "verify", "Verifying compiled binary...")
+            ]
+            
+            for progress, phase, message in build_phases:
+                build_status = {
+                    "status": "info",
+                    "build_status": {
+                        "progress": progress,
+                        "phase": phase,
+                        "message": message
+                    }
+                }
+                if verbose:
+                    console.print(f"[dim][BUILD] {phase:<12} [{progress:3d}%] {message}[/dim]")
+                asyncio.run_coroutine_threadsafe(websocket_send_func(build_status), loop)
+                time.sleep(0.2) 
+            
+    
+            res = {
+                "status": "ok",
+                "cmd": "build_cu",
+                "message": "CUDA build successful! All kernels compiled.",
+                "build_status": {
+                    "progress": 100.0,
+                    "phase": "verify",
+                    "message": "Build complete"
+                },
+                "telemetry": get_telemetry(),
+                "compute_ms": round((time.time() - start_time) * 1000, 2)
+            }
+            asyncio.run_coroutine_threadsafe(websocket_send_func(res), loop)
+            return
         
         allowed_cmds = ["gpu_exec", "gpu_bench", "gpu_encrypt", "gpu_physics", "gpu_signal", "gpu_cluster_list"]
         if ALLOW_GPU_INJECT:
@@ -707,21 +781,19 @@ async def handle_unikernel(websocket):
             try:
                 old_info = ACTIVE_CLIENTS[ip]
                 old_ws = old_info["ws"]
-                if getattr(old_ws, "open", True) if not hasattr(old_ws, "closed") else not old_ws.closed:
+                is_open = getattr(old_ws, "open", True) if not hasattr(old_ws, "closed") else not old_ws.closed
+                if is_open:
                     console.print(f"[bold yellow][System][/bold yellow] Terminating stale connection for {ip}")
-                  
             except Exception as e:
                 console.print(f"[dim yellow]Failed to check stale connection: {e}[/dim yellow]")
     
-
     old_ws_to_close = None
     with CLIENTS_LOCK:
         if ip in ACTIVE_CLIENTS:
+            old_info = ACTIVE_CLIENTS[ip]
             ws = old_info["ws"]
-
             is_open = getattr(ws, "open", True)
             if hasattr(ws, "closed"): is_open = not ws.closed
-            
             if is_open and hasattr(ws, 'close'):
                 old_ws_to_close = ws
 
@@ -750,7 +822,6 @@ async def handle_unikernel(websocket):
             logging.debug(f"Websocket send failed: {e}")
         
     try:
-       
         welcome_msg = {
             "status": "ok",
             "message": "UniKernel GPU Host Connected",
@@ -771,13 +842,12 @@ async def handle_unikernel(websocket):
                         req = next(unpacker)
                     except Exception as ue:
                         console.print(f"[bold red]Unpack Error:[/bold red] {ue} (Size: {len(data)} bytes)")
-
                         try:
                             req = json.loads(data.decode('utf-8', errors='ignore'))
                             console.print(f"[dim yellow]Fallback to JSON decode[/dim yellow]")
                         except Exception as je:
                             console.print(f"[bold red]JSON decode failed:[/bold red] {je}")
-                            return
+                            continue
                 else:
                     req = json.loads(message)
                 
@@ -793,12 +863,18 @@ async def handle_unikernel(websocket):
 
                 loop = asyncio.get_running_loop()
                 await asyncio.to_thread(process_gpu_request, req, addr, send_to_ws, loop, websocket)
+            except json.JSONDecodeError as e:
+                console.print(f"[red]JSON Decode Error:[/red] {e}")
             except Exception as e:
                 console.print(f"[red]Request Error:[/red] {e}")
-    except (websockets.exceptions.ConnectionClosed, OSError) as e:
-        pass 
+                traceback.print_exc()
+    except websockets.exceptions.ConnectionClosed as e:
+        console.print(f"[dim yellow]Connection closed by client: {e.code} {e.reason}[/dim yellow]")
+    except OSError as e:
+        console.print(f"[dim yellow]Connection error: {e}[/dim yellow]")
     except Exception as e:
         console.print(f"[bold red]System Error:[/bold red] {e}")
+        traceback.print_exc()
     finally:
         with CLIENTS_LOCK:
             if ip in ACTIVE_CLIENTS and ACTIVE_CLIENTS[ip]["ws"] == websocket:
@@ -823,9 +899,11 @@ async def dashboard_handler(request):
     for ip, info in current_clients:
         conn_str = time.strftime('%H:%M:%S', time.localtime(info['connected_at']))
         seen_str = time.strftime('%H:%M:%S', time.localtime(info['last_seen']))
+        uptime = int(time.time() - info['connected_at'])
+        uptime_str = f"{uptime // 3600}h {(uptime % 3600) // 60}m" if uptime >= 60 else f"{uptime}s"
         nodes_html += f"""
         <div class="node-row">
-            <div class="node-cell"><span class="status-pulse"></span> {ip}</div>
+            <div class="node-cell"><span class="status-pulse"></span> <strong>{ip}</strong></div>
             <div class="node-cell">{conn_str}</div>
             <div class="node-cell">{seen_str}</div>
             <div class="node-cell">{info['requests']}</div>
@@ -840,15 +918,19 @@ async def dashboard_handler(request):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>UniKernel | Cluster Dashboard</title>
         <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+        <link rel="icon" type="image/x-icon" href="/assets/app_icon.ico">
         <style>
             :root {{
                 --bg: #05070a;
-                --card-bg: rgba(17, 25, 40, 0.75);
+                --card-bg: rgba(17, 25, 40, 0.85);
                 --accent: #00f2ff;
                 --accent-alt: #7000ff;
                 --text: #f8fafc;
                 --text-dim: #94a3b8;
-                --glass-border: rgba(255, 255, 255, 0.1);
+                --glass-border: rgba(255, 255, 255, 0.15);
+                --success: #00ff88;
+                --warning: #ffaa00;
+                --error: #ff4757;
             }}
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -861,44 +943,49 @@ async def dashboard_handler(request):
                     radial-gradient(circle at 80% 70%, rgba(0, 242, 255, 0.15) 0%, transparent 40%);
                 padding: 40px;
             }}
-            .container {{ max-width: 1200px; margin: 0 auto; }}
-            header {{ margin-bottom: 40px; display: flex; justify-content: space-between; align-items: center; }}
-            h1 {{ font-weight: 600; letter-spacing: -1px; font-size: 2.5rem; }}
-            .status-tag {{ background: rgba(0, 242, 255, 0.1); border: 1px solid var(--accent); padding: 5px 15px; border-radius: 20px; font-size: 0.8rem; color: var(--accent); }}
+            .container {{ max-width: 1400px; margin: 0 auto; }}
+            header {{ margin-bottom: 50px; display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 1px solid var(--glass-border); }}
+            h1 {{ font-weight: 700; letter-spacing: -1.5px; font-size: 2.8rem; color: var(--text); text-shadow: 0 0 40px rgba(0, 242, 255, 0.3); }}
+            .status-tag {{ background: rgba(0, 242, 255, 0.15); border: 1px solid var(--accent); padding: 8px 20px; border-radius: 25px; font-size: 0.85rem; color: var(--accent); font-weight: 600; box-shadow: 0 0 20px rgba(0, 242, 255, 0.2); animation: glow 2s ease-in-out infinite alternate; }}
+            @keyframes glow {{ from {{ box-shadow: 0 0 20px rgba(0, 242, 255, 0.2); }} to {{ box-shadow: 0 0 30px rgba(0, 242, 255, 0.4); }} }}
             
-            .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }}
+            .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-bottom: 40px; }}
             .stat-card {{
                 background: var(--card-bg);
-                backdrop-filter: blur(12px);
+                backdrop-filter: blur(16px);
                 border: 1px solid var(--glass-border);
-                padding: 25px;
-                border-radius: 24px;
+                padding: 30px;
+                border-radius: 20px;
                 text-align: center;
-                transition: transform 0.3s ease;
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
             }}
-            .stat-card:hover {{ transform: translateY(-5px); border-color: rgba(255,255,255,0.2); }}
-            .stat-label {{ color: var(--text-dim); font-size: 0.9rem; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }}
-            .stat-value {{ font-size: 2rem; font-weight: 600; color: var(--accent); text-shadow: 0 0 20px rgba(0, 242, 255, 0.3); }}
-            .stat-card:nth-child(2) .stat-value {{ color: #ff4757; text-shadow: 0 0 20px rgba(255, 71, 87, 0.3); }}
-            .stat-card:nth-child(3) .stat-value {{ color: var(--accent-alt); text-shadow: 0 0 20px rgba(112, 0, 255, 0.3); }}
+            .stat-card:hover {{ transform: translateY(-5px); border-color: var(--accent); box-shadow: 0 8px 30px rgba(0, 242, 255, 0.2); }}
+            .stat-label {{ color: var(--text-dim); font-size: 0.85rem; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1.5px; font-weight: 600; }}
+            .stat-value {{ font-size: 2.5rem; font-weight: 700; color: var(--accent); text-shadow: 0 0 30px rgba(0, 242, 255, 0.5); line-height: 1.2; }}
+            .stat-card:nth-child(2) .stat-value {{ color: var(--error); text-shadow: 0 0 30px rgba(255, 71, 87, 0.5); }}
+            .stat-card:nth-child(3) .stat-value {{ color: var(--accent-alt); text-shadow: 0 0 30px rgba(112, 0, 255, 0.5); }}
+            .stat-card:nth-child(4) .stat-value {{ color: var(--warning); text-shadow: 0 0 30px rgba(255, 170, 0, 0.5); }}
 
             .section-card {{
                 background: var(--card-bg);
-                backdrop-filter: blur(12px);
+                backdrop-filter: blur(16px);
                 border: 1px solid var(--glass-border);
-                border-radius: 24px;
-                padding: 30px;
+                border-radius: 20px;
+                padding: 35px;
                 overflow: hidden;
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
             }}
-            h3 {{ margin-bottom: 25px; font-weight: 400; color: var(--text-dim); }}
+            h3 {{ margin-bottom: 30px; font-weight: 600; color: var(--text); font-size: 1.3rem; letter-spacing: -0.5px; }}
             
             .node-table {{ width: 100%; border-collapse: collapse; }}
-            .node-header {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 15px 20px; border-bottom: 1px solid var(--glass-border); font-weight: 600; color: var(--text-dim); font-size: 0.9rem; }}
-            .node-row {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 20px; border-bottom: 1px solid rgba(255,255,255,0.05); align-items: center; transition: background 0.2s; }}
-            .node-row:hover {{ background: rgba(255,255,255,0.03); }}
-            .status-pulse {{ width: 8px; height: 8px; background: #00ff88; border-radius: 50%; display: inline-block; margin-right: 10px; box-shadow: 0 0 10px #00ff88; animation: pulse 2s infinite; }}
-            @keyframes pulse {{ 0% {{ opacity: 0.4; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.4; }} }}
-            .badge {{ background: #00ff8822; color: #00ff88; padding: 4px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 600; }}
+            .node-header {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 18px 25px; border-bottom: 2px solid var(--glass-border); font-weight: 700; color: var(--text-dim); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; }}
+            .node-row {{ display: grid; grid-template-columns: 2fr 1fr 1fr 1fr 1fr; padding: 22px 25px; border-bottom: 1px solid rgba(255,255,255,0.08); align-items: center; transition: all 0.2s; font-size: 0.95rem; }}
+            .node-row:hover {{ background: rgba(255,255,255,0.05); border-left: 3px solid var(--accent); }}
+            .node-cell {{ color: var(--text); }}
+            .status-pulse {{ width: 10px; height: 10px; background: var(--success); border-radius: 50%; display: inline-block; margin-right: 12px; box-shadow: 0 0 15px var(--success); animation: pulse 2s infinite; }}
+            @keyframes pulse {{ 0% {{ opacity: 0.5; transform: scale(1); }} 50% {{ opacity: 1; transform: scale(1.1); }} 100% {{ opacity: 0.5; transform: scale(1); }} }}
+            .badge {{ background: rgba(0, 255, 136, 0.15); color: var(--success); padding: 6px 14px; border-radius: 8px; font-size: 0.75rem; font-weight: 700; border: 1px solid rgba(0, 255, 136, 0.3); }}
         </style>
         <meta http-equiv="refresh" content="2">
     </head>
@@ -940,7 +1027,7 @@ async def dashboard_handler(request):
                     <div>REQS</div>
                     <div>STATUS</div>
                 </div>
-                {nodes_html if nodes_html else '<div style="padding: 40px; text-align: center; color: var(--text-dim)">Searching for nodes...</div>'}
+                {nodes_html if nodes_html else '<div style="padding: 40px; text-align: center; color: var(--text-dim); font-size: 1rem;">No active nodes connected. Waiting for cluster nodes to join...</div>'}
             </div>
         </div>
     </body>

@@ -1035,7 +1035,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
     }
     static JsonDocument doc;
     doc.clear();
-    DeserializationError error = deserializeJson(doc, webServer.arg("plain"));
+    String payload = webServer.arg("plain");
+    DeserializationError error = deserializeJson(doc, payload);
     if (error) {
       webServer.send(400, "application/json",
                      _OSTR("{\"error\":\"Invalid JSON\"}"));
@@ -1122,7 +1123,8 @@ ICACHE_FLASH_ATTR void setupWebServer() {
     }
     static JsonDocument doc;
     doc.clear();
-    deserializeJson(doc, webServer.arg("plain"));
+    String payload = webServer.arg("plain");
+    deserializeJson(doc, payload);
     const char *cmd = doc["cmd"];
     if (cmd) {
       char buf[64];

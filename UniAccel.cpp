@@ -41,6 +41,10 @@ float gpuPwr = 0.0f;
 uint16_t gpuClk = 0;
 unsigned long lastFrameTime = 0;
 
+
+BuildStatus buildStatus = {0, "", "", false, 0};
+bool showBuildProgress = false;
+
 unsigned long lastRequestStartTime = 0;
 static uint8_t renderBuffer[1024];
 bool aiBlockStarted = false;
@@ -59,6 +63,85 @@ ICACHE_FLASH_ATTR uint8_t hex2int(char c) {
   if (c >= 'a' && c <= 'f') return c - 'a' + 10;
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
   return 0;
+}
+
+
+ICACHE_FLASH_ATTR void displayBuildProgress(float progress, const char* phase, const char* message) {
+  buildStatus.progress = progress;
+  buildStatus.phase = phase;
+  buildStatus.message = message;
+  buildStatus.isBuilding = (progress < 100.0);
+  
+  if (showBuildProgress) {
+    kprintColor(CLR_CYN);
+    kprint(F("[BUILD] "));
+    kprintColor(CLR_RST);
+    kprintColor(CLR_YLW);
+    kprint(phase);
+    kprintColor(CLR_RST);
+    kprint(F(" ["));
+    kprintColor(CLR_GRN);
+    kprint((int)progress);
+    kprintColor(CLR_RST);
+    kprint(F("%] "));
+    kprintColor(CLR_BLU);
+    kprintln(message);
+    kprintColor(CLR_RST);
+  }
+}
+
+
+ICACHE_FLASH_ATTR void displayTelemetryBox() {
+  if (accelChatMode) return;  
+  
+  kprintColor(CLR_CYN);
+  kprintln(F("╔════════════════════════════════════════╗"));
+  kprintln(F("║        GPU SYSTEM TELEMETRY           ║"));
+  kprintln(F("╠════════════════════════════════════════╣"));
+  kprintColor(CLR_RST);
+  
+
+  kprint(F("║ "));
+  kprintColor(CLR_RED);
+  kprint(F("◆ Temperature: "));
+  kprint(gpuTemp);
+  kprintln(F("°C"));
+  kprintColor(CLR_RST);
+  
+
+  kprint(F("║ "));
+  kprintColor(CLR_GRN);
+  kprint(F("◆ Utilization: "));
+  kprint(gpuUtil);
+  kprintln(F("%"));
+  kprintColor(CLR_RST);
+
+  kprint(F("║ "));
+  kprintColor(CLR_BLU);
+  kprint(F("◆ VRAM Used: "));
+  kprint(gpuMem);
+  kprintln(F("MB"));
+  kprintColor(CLR_RST);
+  
+
+  kprint(F("║ "));
+  kprintColor(CLR_YLW);
+  kprint(F("◆ Power Draw: "));
+  kprint(gpuPwr);
+  kprintln(F("W"));
+  kprintColor(CLR_RST);
+  
+
+  kprint(F("║ "));
+  kprintColor(CLR_MAG);
+  kprint(F("◆ Clock Speed: "));
+  kprint(gpuClk);
+  kprintln(F("MHz"));
+  kprintColor(CLR_RST);
+  
+  kprintColor(CLR_CYN);
+  kprintln(F("╚════════════════════════════════════════╝"));
+  kprintColor(CLR_RST);
 }
 
 ICACHE_FLASH_ATTR void initUniAccel() {
@@ -250,6 +333,27 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       static JsonDocument doc; doc.clear(); doc["cmd"] = "gpu_physics";
       static uint8_t phys_buffer[64]; size_t len = serializeMsgPack(doc, phys_buffer, sizeof(phys_buffer));
       secure_crypt(phys_buffer, len); webSocket.sendBIN(phys_buffer, len); return;
+  }
+
+
+  if (strcmp_P(sub, PSTR("build")) == 0 || strcmp_P(sub, PSTR("compile")) == 0) {
+      if (!accelConnected) {
+        kprintln(F("Error: Not connected to GPU Host."));
+        return;
+      }
+      showBuildProgress = true;
+      buildStatus.startTime = millis();
+      kprintColor(CLR_CYN);
+      kprintln(F("╔════════════════════════════════════════╗"));
+      kprintln(F("║     Starting CUDA Build Process       ║"));
+      kprintln(F("╚════════════════════════════════════════╝"));
+      kprintColor(CLR_RST);
+      
+      static JsonDocument doc; doc.clear(); doc["cmd"] = "build_cu";
+      doc["verbose"] = true;
+      static uint8_t build_buffer[128]; size_t len = serializeMsgPack(doc, build_buffer, sizeof(build_buffer));
+      secure_crypt(build_buffer, len); webSocket.sendBIN(build_buffer, len);
+      return;
   }
 
   if (strcmp_P(sub, PSTR("chat")) == 0) {
@@ -792,19 +896,44 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
 }
 
 ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
+
+  if (length == 0 || length > 2048) {
+    kprintColor(CLR_RED);
+    kprintln(F("GPU Response: Invalid payload size"));
+    kprintColor(CLR_RST);
+    return;
+  }
+  
   secure_crypt(payload, length);
 
   static JsonDocument res;
   res.clear();
-  DeserializationError error = deserializeMsgPack(res, payload);
+  DeserializationError error = deserializeMsgPack(res, payload, length);
   if (error) {
-    error = deserializeJson(res, payload);
+    error = deserializeJson(res, payload, length);
     if (error) {
       kprintColor(CLR_RED);
       kprint(F("GPU Decode Error: "));
       kprintln(error.c_str());
       kprintColor(CLR_RST);
       return;
+    }
+  }
+
+
+  if (res.containsKey("build_status")) {
+    JsonObject bs = res["build_status"];
+    float progress = bs.containsKey("progress") ? bs["progress"].as<float>() : 0;
+    const char* phase = bs.containsKey("phase") ? bs["phase"].as<const char*>() : "";
+    const char* msg = bs.containsKey("message") ? bs["message"].as<const char*>() : "";
+    
+    displayBuildProgress(progress, phase, msg);
+    
+    if (progress >= 100.0) {
+      showBuildProgress = false;
+      kprintColor(CLR_GRN);
+      kprintln(F("✓ Build completed successfully!"));
+      kprintColor(CLR_RST);
     }
   }
 
@@ -828,34 +957,42 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       gpuPwr = tel["pwr"].as<float>();
       gpuClk = tel["clk"].as<int>();
 
-      kprintColor(CLR_CYN);
-      kprint(F("[GPU] "));
-      kprintColor(CLR_RST);
-      kprintColor(CLR_RED);
-      kprint(gpuTemp);
-      kprint(F("°C"));
-      kprintColor(CLR_RST);
-      kprint(F(" | "));
-      kprintColor(CLR_GRN);
-      kprint(gpuUtil);
-      kprint(F("% Util"));
-      kprintColor(CLR_RST);
-      kprint(F(" | "));
-      kprintColor(CLR_BLU);
-      kprint(gpuMem);
-      kprint(F("MB"));
-      kprintColor(CLR_RST);
-      kprint(F(" | "));
-      kprintColor(CLR_YLW);
-      kprint(gpuPwr);
-      kprint(F("W"));
-      kprintColor(CLR_RST);
-      kprint(F(" | "));
-      kprintColor(CLR_MAG);
-      kprint(gpuClk);
-      kprint(F("MHz"));
-      kprintColor(CLR_RST);
-      kprintln();
+
+      bool useBox = res.containsKey("display_format") && strcmp(res["display_format"].as<const char*>(), "box") == 0;
+      
+      if (useBox) {
+        displayTelemetryBox();
+      } else {
+      
+        kprintColor(CLR_CYN);
+        kprint(F("[GPU] "));
+        kprintColor(CLR_RST);
+        kprintColor(CLR_RED);
+        kprint(gpuTemp);
+        kprint(F("°C"));
+        kprintColor(CLR_RST);
+        kprint(F(" | "));
+        kprintColor(CLR_GRN);
+        kprint(gpuUtil);
+        kprint(F("% Util"));
+        kprintColor(CLR_RST);
+        kprint(F(" | "));
+        kprintColor(CLR_BLU);
+        kprint(gpuMem);
+        kprint(F("MB"));
+        kprintColor(CLR_RST);
+        kprint(F(" | "));
+        kprintColor(CLR_YLW);
+        kprint(gpuPwr);
+        kprint(F("W"));
+        kprintColor(CLR_RST);
+        kprint(F(" | "));
+        kprintColor(CLR_MAG);
+        kprint(gpuClk);
+        kprint(F("MHz"));
+        kprintColor(CLR_RST);
+        kprintln();
+      }
     }
 
     if (res.containsKey("cmd")) {
