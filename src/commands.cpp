@@ -3,8 +3,6 @@
 #include "../include/common.h"
 #include "../include/shell.h"
 #include "../include/vfs.h"
-
-
 extern const char CLR_RST[] PROGMEM;
 extern const char CLR_RED[] PROGMEM;
 extern const char CLR_GRN[] PROGMEM;
@@ -14,23 +12,19 @@ extern const char CLR_MAG[] PROGMEM;
 extern const char CLR_CYN[] PROGMEM;
 extern const char CLR_WHT[] PROGMEM;
 #include "../UniAccel.h"
-
 bool isTelnetSafeCommand(const char *cmd);
 #include <EEPROM.h>
 #include <LittleFS.h>
 #include <Wire.h>
 #include <time.h>
 #include <vector>
-
 extern void runScript(const char *content);
 #if defined(ESP8266)
 #include <ESP8266Ping.h>
 #include <ESP8266WiFi.h>
-
 #elif defined(ESP32)
 #include <ESP32Ping.h>
 #include <WiFi.h>
-
 #endif
 #include "../UniAccel.h"
 #if defined(ESP8266)
@@ -38,13 +32,10 @@ extern void runScript(const char *content);
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <WiFiClient.h>
-
 #endif
-
 #if defined(ESP32)
 #include <ArduinoOTA.h>
 #include <WebServer.h>
-
 #endif
 extern bool accelChatMode;
 extern bool telnetEnabled;
@@ -62,10 +53,8 @@ extern ESP8266WebServer webServer;
 extern WebServer webServer;
 #endif
 extern void redrawPrompt();
-
 std::vector<CommandDef> commandTable;
 bool useColor = false;
-
 ICACHE_FLASH_ATTR bool isSystemProtected(const char *name) {
   if (strlen(name) != 6)
     return false;
@@ -76,7 +65,6 @@ ICACHE_FLASH_ATTR bool isSystemProtected(const char *name) {
   }
   return false;
 }
-
 ICACHE_FLASH_ATTR void registerCommands() {
   commandTable.emplace_back("ls", handle_ls, false,
                             "List files in current directory");
@@ -181,9 +169,7 @@ ICACHE_FLASH_ATTR void registerCommands() {
   commandTable.emplace_back("recovery", handle_recovery, true,
                             "System recovery tools");
 }
-
 bool isSerialSession = true;
-
 ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
   isSerialSession = fromSerial;
   char *cmdLine = strdup(line);
@@ -191,20 +177,16 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
     sendResponse(false, 500, "Out of memory");
     return;
   }
-
   char *p = kTrim(cmdLine);
   char *cmd = p;
   char *args = strchr(p, ' ');
-
   if (args) {
     *args = '\0';
     args = kTrim(args + 1);
   } else {
     args = (char *)"";
   }
-
   toLowercase(cmd);
-
   const char *proxyTarget = getEnv("PROXY_TARGET");
   if (proxyTarget && proxyTarget[0] != '\0' && strcmp(cmd, "exit") != 0) {
     static JsonDocument pdoc;
@@ -224,11 +206,9 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
     free(cmdLine);
     return;
   }
-
   for (const auto &c : commandTable) {
     if (strcmp(cmd, c.name) == 0) {
       bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
-
       if (!fromSerial && telnetAuthenticated) {
         if (!isTelnetSafeCommand(cmd)) {
           sendResponse(false, 403, "Command not allowed via network");
@@ -236,7 +216,6 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
           return;
         }
       }
-
       if (c.authRequired && !currentAuth && !needsSetup) {
         sendResponse(false, 401, "Authentication required");
         free(cmdLine);
@@ -250,7 +229,6 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
   sendResponse(false, 404, "Command not found");
   free(cmdLine);
 }
-
 ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
   if (strcmp(currentPath, "/mnt/host") == 0 ||
       strncmp(args, "/mnt/host", 9) == 0) {
@@ -301,14 +279,11 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
     sendResponse(true, 200, "OK", &data);
     return;
   }
-
   bool empty = true;
   int fileCount = 0;
-
   for (int i = 0; i < MAX_FILES; i++) {
     if (vfs[i].flags & FLAG_ACTIVE) {
       bool pathMatch = (strcmp(vfs[i].parentDir, currentPath) == 0);
-
       if (pathMatch) {
         empty = false;
         fileCount++;
@@ -355,7 +330,6 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
   if (empty && !isLong)
     kprintln(F("(empty)"));
 }
-
 ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
   if (strncmp(args, "/mnt/host/", 10) == 0 ||
       strcmp(currentPath, "/mnt/host") == 0) {
@@ -404,7 +378,6 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       return;
     }
     if (strcmp(args, "temp") == 0 || strstr(args, "temp")) {
-
       kprintln(25 + (millis() % 5));
       return;
     }
@@ -413,7 +386,6 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       return;
     }
   }
-
   int idx = findFile(args, currentPath);
   if (idx != -1) {
     if (!fromSerial) {
@@ -425,7 +397,6 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       kprintln(vfs[idx].content);
     }
   } else {
-    
     String path = args;
     if (!path.startsWith("/")) path = "/" + path;
     if (LittleFS.exists(path)) {
@@ -442,7 +413,6 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_mkdir(char *args, bool fromSerial) {
   if (!isValidFsName(args)) {
     sendResponse(false, 400, "Invalid name");
@@ -462,7 +432,6 @@ ICACHE_FLASH_ATTR void handle_mkdir(char *args, bool fromSerial) {
   }
   sendResponse(false, 507, "FS full");
 }
-
 ICACHE_FLASH_ATTR void handle_touch(char *args, bool fromSerial) {
   if (!isValidFsName(args)) {
     sendResponse(false, 400, "Invalid name");
@@ -482,7 +451,6 @@ ICACHE_FLASH_ATTR void handle_touch(char *args, bool fromSerial) {
   }
   sendResponse(false, 507, "FS full");
 }
-
 ICACHE_FLASH_ATTR void handle_cd(char *args, bool fromSerial) {
   if (strcmp(args, "..") == 0 || strcmp(args, "/") == 0) {
     strcpy(currentPath, "/");
@@ -499,14 +467,12 @@ ICACHE_FLASH_ATTR void handle_cd(char *args, bool fromSerial) {
     sendResponse(false, 404, "Directory not found");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_pwd(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
   data["path"] = currentPath;
   sendResponse(true, 200, "OK", &data);
 }
-
 ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
   char *redir = strchr(args, '>');
   if (redir) {
@@ -514,13 +480,11 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
     char *filename = kTrim(redir + 1);
     char *text = kTrim(args);
     stripQuotes(text);
-
     if (isSystemProtected(filename) && !fromSerial) {
       sendResponse(false, 403,
                    "Protected system file (Serial access required)");
       return;
     }
-
     if (strcmp(currentPath, "/dev/") == 0) {
       if (strcmp(filename, "led") == 0) {
         pinMode(LED_BUILTIN, OUTPUT);
@@ -531,7 +495,6 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
         return;
       }
     }
-
     int idx = findFile(filename, currentPath);
     if (idx == -1) {
       for (int i = 0; i < MAX_FILES; i++) {
@@ -546,7 +509,6 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
         }
       }
     }
-
     if (idx != -1) {
       safeStrncpy(vfs[idx].content, text, CONTENT_LEN);
       sendResponse(true, 200, "File updated");
@@ -564,7 +526,6 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
     }
   }
 }
-
 ICACHE_FLASH_ATTR void handle_i2c(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0 || args[0] == '\0') {
     if (fromSerial) {
@@ -575,7 +536,6 @@ ICACHE_FLASH_ATTR void handle_i2c(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strcmp(args, "scan") == 0) {
     static JsonDocument data;
     data.clear();
@@ -590,13 +550,11 @@ ICACHE_FLASH_ATTR void handle_i2c(char *args, bool fromSerial) {
     sendResponse(false, 400, "Unknown I2C command. Type 'i2c help'.");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_date(char *args, bool fromSerial) {
   time_t now = time(nullptr);
   char *dateStr = ctime(&now);
   if (dateStr && dateStr[strlen(dateStr) - 1] == '\n')
     dateStr[strlen(dateStr) - 1] = '\0';
-
   if (fromSerial) {
     kprintColor(CLR_CYN);
     kprintln(dateStr ? dateStr : "Unknown Date");
@@ -609,13 +567,11 @@ ICACHE_FLASH_ATTR void handle_date(char *args, bool fromSerial) {
     sendResponse(true, 200, "OK", &data);
   }
 }
-
 ICACHE_FLASH_ATTR void handle_reboot(char *args, bool fromSerial) {
   sendResponse(true, 200, "Rebooting...");
   delay(500);
   ESP.restart();
 }
-
 ICACHE_FLASH_ATTR void handle_login(char *args, bool fromSerial) {
   char hashedInput[17];
   char savedPass[17];
@@ -623,7 +579,6 @@ ICACHE_FLASH_ATTR void handle_login(char *args, bool fromSerial) {
   EEPROM.get(EEPROM_PASS_ADDR, savedPass);
   EEPROM.get(EEPROM_SALT_ADDR, salt);
   hashPass(args, hashedInput, salt);
-
   if (secureEquals(hashedInput, savedPass, 16)) {
     if (fromSerial)
       serialAuthenticated = true;
@@ -635,7 +590,6 @@ ICACHE_FLASH_ATTR void handle_login(char *args, bool fromSerial) {
     sendResponse(false, 401, "Invalid password");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_on(char *args, bool fromSerial) {
   int pin = atoi_safe(args);
   if (pin >= 0 && pin <= 19) {
@@ -650,7 +604,6 @@ ICACHE_FLASH_ATTR void handle_on(char *args, bool fromSerial) {
     sendResponse(false, 400, "Invalid pin");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_off(char *args, bool fromSerial) {
   int pin = atoi_safe(args);
   if (pin >= 0 && pin <= 19) {
@@ -665,7 +618,6 @@ ICACHE_FLASH_ATTR void handle_off(char *args, bool fromSerial) {
     sendResponse(false, 400, "Invalid pin");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
   if (fromSerial) {
     kprintColor_P(CLR_CYN);
@@ -673,13 +625,11 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
     kprintln(F("==============================================================="
                "========"));
     kprintColor_P(CLR_RST);
-
     auto printCategory = [](const __FlashStringHelper *title,
                             const char *cmds[]) {
       kprintColor_P(CLR_YLW);
       kprintln(title);
       kprintColor_P(CLR_RST);
-
       std::vector<const CommandDef *> foundCmds;
       for (int i = 0; cmds[i] != nullptr; i++) {
         for (const auto &c : commandTable) {
@@ -689,7 +639,6 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
           }
         }
       }
-
       int count = foundCmds.size();
       for (int i = 0; i < count; i += 2) {
         char left[64] = "";
@@ -708,7 +657,6 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
       }
       kprintln();
     };
-
     const char *catFs[] = {"ls",  "cat",  "mkdir",  "touch", "cd",
                            "pwd", "echo", "append", "rm",    "mv",
                            "cp",  "info", "lfs",    "chmod", "chown",
@@ -726,7 +674,6 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
                             "ota",   "telnet", "web",    "bt",     nullptr};
     const char *catMisc[] = {"help",   "clear", "color", "alias", "env",
                              "export", "delay", "accel", nullptr};
-
     printCategory(F("[ Filesystem & VFS ]"), catFs);
     printCategory(F("[ System & Hardware ]"), catSys);
     printCategory(F("[ Tasks & Automation ]"), catProc);
@@ -734,7 +681,6 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
     printCategory(F("[ Hardware IO ]"), catHw);
     printCategory(F("[ Security & Services ]"), catSec);
     printCategory(F("[ Misc Utilities ]"), catMisc);
-
     kprintColor_P(CLR_CYN);
     kprintln(F("==============================================================="
                "========"));
@@ -751,14 +697,12 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
     sendResponse(true, 200, "Commands List", &data);
   }
 }
-
 ICACHE_FLASH_ATTR void handle_uptime(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
   data["uptime_sec"] = millis() / 1000;
   sendResponse(true, 200, "OK", &data);
 }
-
 ICACHE_FLASH_ATTR void handle_rm(char *args, bool fromSerial) {
   int idx = findFile(args, currentPath);
   if (idx != -1) {
@@ -773,7 +717,6 @@ ICACHE_FLASH_ATTR void handle_rm(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_mv(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -797,7 +740,6 @@ ICACHE_FLASH_ATTR void handle_mv(char *args, bool fromSerial) {
     sendResponse(false, 404, "Source file not found");
   }
 }
-
 ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -812,7 +754,6 @@ ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
     sendResponse(false, 404, "Source not found");
     return;
   }
-
   if ((isSystemProtected(src) || isSystemProtected(dst)) && !fromSerial) {
     sendResponse(false, 403, "Protected system file (Serial access required)");
     return;
@@ -827,7 +768,6 @@ ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
   }
   sendResponse(false, 507, "FS full");
 }
-
 ICACHE_FLASH_ATTR void handle_pinmode(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -843,7 +783,6 @@ ICACHE_FLASH_ATTR void handle_pinmode(char *args, bool fromSerial) {
     pinMode(pin, INPUT);
   sendResponse(true, 200, "Pin mode set");
 }
-
 ICACHE_FLASH_ATTR void handle_write(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -856,7 +795,6 @@ ICACHE_FLASH_ATTR void handle_write(char *args, bool fromSerial) {
   digitalWrite(pin, val);
   sendResponse(true, 200, "Pin written");
 }
-
 ICACHE_FLASH_ATTR void handle_read(char *args, bool fromSerial) {
   int pin = atoi_safe(args);
   int val = digitalRead(pin);
@@ -866,7 +804,6 @@ ICACHE_FLASH_ATTR void handle_read(char *args, bool fromSerial) {
   data["value"] = val;
   sendResponse(true, 200, "OK", &data);
 }
-
 ICACHE_FLASH_ATTR void handle_neofetch(char *args, bool fromSerial) {
   kprintColor_P(CLR_YLW);
   kprintln(F("       .---.          root@unikernel"));
@@ -926,14 +863,12 @@ ICACHE_FLASH_ATTR void handle_neofetch(char *args, bool fromSerial) {
   kprintColor(CLR_RST);
   kprintln();
 }
-
 void handle_free(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
   data["free_heap"] = ESP.getFreeHeap();
   sendResponse(true, 200, "OK", &data);
 }
-
 void handle_wifi(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0) {
     if (fromSerial) {
@@ -955,7 +890,6 @@ void handle_wifi(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strcmp(args, "scan") == 0) {
     if (fromSerial)
       kprintln(F("Scanning WiFi networks..."));
@@ -976,12 +910,10 @@ void handle_wifi(char *args, bool fromSerial) {
     sendResponse(true, 200, "WiFi Scan Results", &data);
     return;
   }
-
   if (strncmp(args, "connect ", 8) == 0) {
     char *line = args + 8;
     char ssid[32] = {0};
     char pass[64] = {0};
-
     if (*line == '"') {
       line++;
       char *end = strchr(line, '"');
@@ -1007,22 +939,18 @@ void handle_wifi(char *args, bool fromSerial) {
         strncpy(ssid, line, 31);
       }
     }
-
     if (strlen(pass) > 0)
       WiFi.begin(ssid, pass);
     else
       WiFi.begin(ssid);
-
     sendResponse(true, 200, "Connecting to WiFi...");
     return;
   }
-
   if (strcmp(args, "disconnect") == 0) {
     WiFi.disconnect(true);
     sendResponse(true, 200, "WiFi Disconnected");
     return;
   }
-
   if (strncmp(args, "mode ", 5) == 0) {
     if (strcmp(args + 5, "ap") == 0)
       WiFi.mode(WIFI_AP);
@@ -1033,12 +961,10 @@ void handle_wifi(char *args, bool fromSerial) {
     sendResponse(true, 200, "WiFi Mode Updated");
     return;
   }
-
   if (strncmp(args, "ap ", 3) == 0) {
     char *line = args + 3;
     char ssid[32] = {0};
     char pass[64] = {0};
-
     if (*line == '"') {
       line++;
       char *end = strchr(line, '"');
@@ -1062,7 +988,6 @@ void handle_wifi(char *args, bool fromSerial) {
         strncpy(pass, sp + 1, 63);
       }
     }
-
     if (strlen(ssid) > 0 && strlen(pass) > 0) {
       WiFi.softAP(ssid, pass);
       sendResponse(true, 200, "Access Point Created");
@@ -1071,7 +996,6 @@ void handle_wifi(char *args, bool fromSerial) {
     }
     return;
   }
-
   static JsonDocument data;
   data.clear();
   int status = WiFi.status();
@@ -1085,11 +1009,9 @@ void handle_wifi(char *args, bool fromSerial) {
   data["gateway"] = WiFi.gatewayIP().toString();
   sendResponse(true, 200, "WiFi Status", &data);
 }
-
 void handle_clear(char *args, bool fromSerial) {
   Serial.print("\033[2J\033[H");
 }
-
 void handle_dmesg(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
@@ -1104,7 +1026,6 @@ void handle_dmesg(char *args, bool fromSerial) {
   }
   sendResponse(true, 200, "Kernel Log", &data);
 }
-
 void handle_df(char *args, bool fromSerial) {
   FSInfo info;
   LittleFS.info(info);
@@ -1115,7 +1036,6 @@ void handle_df(char *args, bool fromSerial) {
   data["free"] = info.totalBytes - info.usedBytes;
   sendResponse(true, 200, "Disk Usage", &data);
 }
-
 void handle_hwinfo(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
@@ -1124,7 +1044,6 @@ void handle_hwinfo(char *args, bool fromSerial) {
   data["cpu_freq"] = ESP.getCpuFreqMHz();
   sendResponse(true, 200, "Hardware Info", &data);
 }
-
 void handle_logout(char *args, bool fromSerial) {
   accelChatMode = false;
   if (fromSerial)
@@ -1133,7 +1052,6 @@ void handle_logout(char *args, bool fromSerial) {
     telnetAuthenticated = false;
   sendResponse(true, 200, "Logged out");
 }
-
 void handle_exit(char *args, bool fromSerial) {
   accelChatMode = false;
   sendResponse(true, 200, "Exiting terminal");
@@ -1143,14 +1061,10 @@ void handle_exit(char *args, bool fromSerial) {
     telnetAuthenticated = false;
   }
 }
-
 void handle_accel(char *args, bool fromSerial) { handleAccelCommand(args); }
-
 void handle_hf(char *args, bool fromSerial) { handleHfCommand(args); }
-
 void handle_chat(char *args, bool fromSerial) {
   if (strlen(args) == 0) {
-
     accelChatMode = !accelChatMode;
     if (accelChatMode) {
       kprintln(F("AI Chat mode enabled"));
@@ -1177,7 +1091,6 @@ void handle_chat(char *args, bool fromSerial) {
       sendResponse(false, 400, "Usage: chat [on|off]");
   }
 }
-
 void handle_sh(char *args, bool fromSerial) {
   int idx = findFile(args, currentPath);
   if (idx != -1) {
@@ -1189,7 +1102,6 @@ void handle_sh(char *args, bool fromSerial) {
     sendResponse(false, 404, "Script not found");
   }
 }
-
 void handle_waitwifi(char *args, bool fromSerial) {
   if (fromSerial)
     kprintln(F("Waiting for WiFi connection..."));
@@ -1209,7 +1121,6 @@ void handle_waitwifi(char *args, bool fromSerial) {
     sendResponse(false, 504, "WiFi Connection Timeout");
   }
 }
-
 void handle_color(char *args, bool fromSerial) {
   if (strcmp(args, "on") == 0)
     useColor = true;
@@ -1221,12 +1132,10 @@ void handle_color(char *args, bool fromSerial) {
   }
   sendResponse(true, 200, useColor ? "Color enabled" : "Color disabled");
 }
-
 void handle_whoami(char *args, bool fromSerial) {
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
   sendResponse(true, 200, currentAuth ? "root" : "guest");
 }
-
 void handle_uname(char *args, bool fromSerial) {
   static JsonDocument data;
   data.clear();
@@ -1236,7 +1145,6 @@ void handle_uname(char *args, bool fromSerial) {
   data["machine"] = "xtensa-lx106";
   sendResponse(true, 200, "OK", &data);
 }
-
 void handle_passwd(char *args, bool fromSerial) {
   bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
   if (!fromSerial && !currentAuth) {
@@ -1258,7 +1166,6 @@ void handle_passwd(char *args, bool fromSerial) {
   needsSetup = false;
   sendResponse(true, 200, "Password changed");
 }
-
 void handle_alias(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0) {
     if (fromSerial) {
@@ -1271,7 +1178,6 @@ void handle_alias(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strlen(args) == 0) {
     static JsonDocument data;
     data.clear();
@@ -1286,7 +1192,6 @@ void handle_alias(char *args, bool fromSerial) {
     sendResponse(true, 200, "Aliases", &data);
     return;
   }
-
   char *eq = strchr(args, '=');
   if (eq) {
     *eq = '\0';
@@ -1306,19 +1211,14 @@ void handle_alias(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: alias name=cmd");
   }
 }
-
 void handle_env(char *args, bool fromSerial) {
   if (fromSerial) {
     kprintColor(CLR_CYN);
     kprintln(F("--- Environment Variables ---"));
     kprintColor(CLR_RST);
-    
-
     kprint(F("VCC=")); kprintln(ESP.getVcc());
     kprint(F("RAM=")); kprintln(freeMemory());
     kprint(F("TEMP=")); kprintln(25 + (int)(millis() % 5));
-    
-
     for (int i = 0; i < MAX_ENV; i++) {
       if (envTable[i].active) {
         kprint(envTable[i].key);
@@ -1328,7 +1228,6 @@ void handle_env(char *args, bool fromSerial) {
     }
     return;
   }
-
   static JsonDocument data;
   data.clear();
   JsonObject obj = data.to<JsonObject>();
@@ -1341,7 +1240,6 @@ void handle_env(char *args, bool fromSerial) {
   }
   sendResponse(true, 200, "Environment Variables", &data);
 }
-
 void handle_export(char *args, bool fromSerial) {
   char *eq = strchr(args, '=');
   if (eq) {
@@ -1352,7 +1250,6 @@ void handle_export(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: export key=val");
   }
 }
-
 void handle_sys(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0) {
     if (fromSerial) {
@@ -1366,7 +1263,6 @@ void handle_sys(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strcmp(args, "diagnosis") == 0) {
     kprintln(F("--- UniKernel Performance Diagnosis ---"));
     kprint(F("Free Memory    : "));
@@ -1402,7 +1298,6 @@ void handle_sys(char *args, bool fromSerial) {
     handle_neofetch(args, fromSerial);
   }
 }
-
 void handle_ps(char *args, bool fromSerial) {
   if (fromSerial) {
     kprintColor(CLR_CYN);
@@ -1427,7 +1322,6 @@ void handle_ps(char *args, bool fromSerial) {
     }
     return;
   }
-
   static JsonDocument data;
   data.clear();
   JsonArray arr = data.to<JsonArray>();
@@ -1441,9 +1335,7 @@ void handle_ps(char *args, bool fromSerial) {
   }
   sendResponse(true, 200, "Process List", &data);
 }
-
 void handle_top(char *args, bool fromSerial) { handle_ps(args, fromSerial); }
-
 void handle_append(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -1467,7 +1359,6 @@ void handle_append(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 void handle_info(char *args, bool fromSerial) {
   int idx = findFile(args, currentPath);
   if (idx != -1) {
@@ -1482,7 +1373,6 @@ void handle_info(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 void handle_save(char *args, bool fromSerial) {
   uint16_t magic = VFS_MAGIC;
   EEPROM.put(EEPROM_VFS_ADDR, magic);
@@ -1490,7 +1380,6 @@ void handle_save(char *args, bool fromSerial) {
   EEPROM.commit();
   sendResponse(true, 200, "VFS saved to EEPROM");
 }
-
 void handle_load(char *args, bool fromSerial) {
   uint16_t magic;
   EEPROM.get(EEPROM_VFS_ADDR, magic);
@@ -1501,7 +1390,6 @@ void handle_load(char *args, bool fromSerial) {
     sendResponse(false, 404, "No saved VFS found");
   }
 }
-
 void handle_lfs(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0 || strlen(args) == 0) {
     if (fromSerial) {
@@ -1515,7 +1403,6 @@ void handle_lfs(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strcmp(args, "format") == 0) {
     LittleFS.format();
     sendResponse(true, 200, "LittleFS formatted");
@@ -1562,7 +1449,6 @@ void handle_lfs(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: lfs [ls|cat|rm|format]");
   }
 }
-
 void handle_chmod(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -1580,7 +1466,6 @@ void handle_chmod(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 void handle_chown(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -1598,7 +1483,6 @@ void handle_chown(char *args, bool fromSerial) {
     sendResponse(false, 404, "File not found");
   }
 }
-
 void handle_cpu(char *args, bool fromSerial) {
   int freq = atoi(args);
   if (freq == 80 || freq == 160) {
@@ -1610,20 +1494,17 @@ void handle_cpu(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: cpu [80|160]");
   }
 }
-
 void handle_sleep(char *args, bool fromSerial) {
   int ms = atoi(args);
   sendResponse(true, 200, "Entering light sleep...");
   delay(ms);
 }
-
 void handle_deepsleep(char *args, bool fromSerial) {
   int sec = atoi(args);
   sendResponse(true, 200, "Entering deep sleep...");
   delay(500);
   ESP.deepSleep(sec * 1000000);
 }
-
 void handle_firewall(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0 || strlen(args) == 0) {
     if (fromSerial) {
@@ -1635,7 +1516,6 @@ void handle_firewall(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strncmp(args, "allow ", 6) == 0) {
     safeStrncpy(whitelistIP, args + 6, 16);
     sendResponse(true, 200, "Firewall: IP Whitelisted");
@@ -1646,16 +1526,13 @@ void handle_firewall(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: firewall [allow IP|clear]");
   }
 }
-
 void handle_ota(char *args, bool fromSerial) {
   char *sub = strtok(args, " ");
   char *val = strtok(NULL, "");
-
   if (!sub) {
     sendResponse(false, 400, "Usage: ota [on|setpass <pass>]");
     return;
   }
-
   if (strcmp(sub, "setpass") == 0 && val) {
     if (strlen(val) < 6) {
       sendResponse(false, 400, "Password too short (min 6)");
@@ -1667,10 +1544,8 @@ void handle_ota(char *args, bool fromSerial) {
     md5.add(val);
     md5.calculate();
     md5.getChars(hash);
-
     EEPROM.put(EEPROM_OTA_PASS_ADDR, hash);
     EEPROM.commit();
-
     ArduinoOTA.setPasswordHash(hash);
     sendResponse(true, 200, "OTA Password updated and hashed");
   } else if (strcmp(sub, "on") == 0) {
@@ -1689,13 +1564,11 @@ void handle_ota(char *args, bool fromSerial) {
     sendResponse(false, 400, "Usage: ota [on|setpass <pass>]");
   }
 }
-
 void handle_delay(char *args, bool fromSerial) {
   int ms = atoi(args);
   delay(ms);
   sendResponse(true, 200, "Done");
 }
-
 void handle_kill(char *args, bool fromSerial) {
   int pid = atoi(args);
   if (pid >= 0 && pid < MAX_TASKS) {
@@ -1705,7 +1578,6 @@ void handle_kill(char *args, bool fromSerial) {
     sendResponse(false, 400, "Invalid PID");
   }
 }
-
 void handle_trigger(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0) {
     if (fromSerial) {
@@ -1718,7 +1590,6 @@ void handle_trigger(char *args, bool fromSerial) {
     }
     return;
   }
-
   if (strlen(args) == 0) {
     static JsonDocument data;
     data.clear();
@@ -1755,7 +1626,6 @@ void handle_trigger(char *args, bool fromSerial) {
     }
   }
 }
-
 void handle_boot(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0) {
     if (fromSerial) {
@@ -1769,7 +1639,6 @@ void handle_boot(char *args, bool fromSerial) {
     }
     return;
   }
-
   char buf[NAME_LEN];
   memset(buf, 0, sizeof(buf));
   if (strncmp(args, "reset", 5) == 0) {
@@ -1791,11 +1660,9 @@ void handle_boot(char *args, bool fromSerial) {
     sendResponse(true, 200, "Boot Configuration", &data);
   }
 }
-
 void handle_mqtt(char *args, bool fromSerial) {
   sendResponse(true, 200, "MQTT Message Sent (Simulated)");
 }
-
 void handle_pwm(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -1808,7 +1675,6 @@ void handle_pwm(char *args, bool fromSerial) {
   analogWrite(pin, val);
   sendResponse(true, 200, "PWM set");
 }
-
 void handle_gpio(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -1819,10 +1685,8 @@ void handle_gpio(char *args, bool fromSerial) {
   *sp = '\0';
   char *first = kTrim(args);
   char *second = kTrim(sp + 1);
-
   int pin;
   char *act;
-
   if (strcmp(first, "toggle") == 0) {
     char toggleCmd[] = "toggle";
     act = toggleCmd;
@@ -1831,12 +1695,10 @@ void handle_gpio(char *args, bool fromSerial) {
     pin = atoi_safe(first);
     act = second;
   }
-
   if (pin < 0 || pin > 16) {
     sendResponse(false, 400, "Invalid pin number (0-16)");
     return;
   }
-
   pinMode(pin, OUTPUT);
   if (strcmp(act, "on") == 0) {
     digitalWrite(pin, HIGH);
@@ -1851,13 +1713,11 @@ void handle_gpio(char *args, bool fromSerial) {
   }
   sendResponse(true, 200, "GPIO updated");
 }
-
 void handle_ping(char *args, bool fromSerial) {
   if (strlen(args) == 0) {
     sendResponse(false, 400, "Usage: ping [host]");
     return;
   }
-
   IPAddress remote_ip;
   if (!WiFi.hostByName(args, remote_ip)) {
     if (fromSerial) {
@@ -1869,22 +1729,18 @@ void handle_ping(char *args, bool fromSerial) {
     }
     return;
   }
-
   char ipStr[16];
   sprintf(ipStr, "%d.%d.%d.%d", remote_ip[0], remote_ip[1], remote_ip[2],
           remote_ip[3]);
-
   if (fromSerial) {
     kprint(F("\nPinging "));
     kprint(args);
     kprint(F(" ["));
     kprint(ipStr);
     kprintln(F("] with 32 bytes of data:"));
-
     int sent = 0;
     int received = 0;
     long minT = 999, maxT = 0, totalT = 0;
-
     for (int i = 0; i < 3; i++) {
       sent++;
 #if defined(ESP8266) || defined(ESP32)
@@ -1901,7 +1757,6 @@ void handle_ping(char *args, bool fromSerial) {
         if (t > maxT)
           maxT = t;
         totalT += t;
-
         kprint(F("Reply from "));
         kprint(ipStr);
         kprint(F(": bytes=32 time="));
@@ -1912,7 +1767,6 @@ void handle_ping(char *args, bool fromSerial) {
       }
       delay(500);
     }
-
     kprint(F("\nPing statistics for "));
     kprintln(ipStr);
     kprint(F("    Packets: Sent = "));
@@ -1924,7 +1778,6 @@ void handle_ping(char *args, bool fromSerial) {
     kprint(F(" ("));
     kprint((sent - received) * 100 / sent);
     kprintln(F("% loss),"));
-
     if (received > 0) {
       kprintln(F("Approximate round trip times in milli-seconds:"));
       kprint(F("    Minimum = "));
@@ -1945,7 +1798,6 @@ void handle_ping(char *args, bool fromSerial) {
     sendResponse(true, 200, "Ping OK", &data);
   }
 }
-
 void handle_wget(char *args, bool fromSerial) {
 #if defined(ESP8266)
   WiFiClient client;
@@ -1966,12 +1818,10 @@ void handle_wget(char *args, bool fromSerial) {
   }
 #endif
 }
-
 void handle_ntp(char *args, bool fromSerial) {
   configTime(0, 0, "pool.ntp.org");
   sendResponse(true, 200, "NTP Sync Started");
 }
-
 void handle_telnet(char *args, bool fromSerial) {
 #ifndef PRODUCTION_BUILD
   if (strcmp(args, "on") == 0) {
@@ -1983,7 +1833,6 @@ void handle_telnet(char *args, bool fromSerial) {
     telnetEnabled = false;
     if (telnetClient)
       telnetClient.stop();
-
     addDmesg(F("Telnet: Server Stopped"));
   }
   sendResponse(true, 200, telnetEnabled ? "Telnet ON" : "Telnet OFF");
@@ -1991,7 +1840,6 @@ void handle_telnet(char *args, bool fromSerial) {
   sendResponse(false, 403, "Telnet disabled in production");
 #endif
 }
-
 void handle_web(char *args, bool fromSerial) {
   if (strcmp(args, "on") == 0) {
     webEnabled = true;
@@ -2003,7 +1851,6 @@ void handle_web(char *args, bool fromSerial) {
   sendResponse(true, 200,
                webEnabled ? "Web Dashboard ON" : "Web Dashboard OFF");
 }
-
 void handle_bt(char *args, bool fromSerial) {
 #if defined(ESP32)
   btEnabled = (strcmp(args, "on") == 0);
@@ -2012,12 +1859,10 @@ void handle_bt(char *args, bool fromSerial) {
   sendResponse(false, 501, "BT only for ESP32");
 #endif
 }
-
 void handle_netstat(char *args, bool fromSerial) {
   kprintln(F("╭───────┬──────┬────────────┬────────────┬────────────────╮"));
   kprintln(F("│ Proto │ Port │ Service    │ Status     │ Remote Host    │"));
   kprintln(F("├───────┼──────┼────────────┼────────────┼────────────────┤"));
-
   kprint(F("│ TCP   │ 23   │ Telnet     │ "));
   if (telnetEnabled) {
     kprintColor(CLR_GRN);
@@ -2028,7 +1873,6 @@ void handle_netstat(char *args, bool fromSerial) {
   }
   kprintColor(CLR_RST);
   kprintln(F("│ -              │"));
-
   kprint(F("│ TCP   │ 80   │ Web/API    │ "));
   if (webEnabled) {
     kprintColor(CLR_GRN);
@@ -2039,7 +1883,6 @@ void handle_netstat(char *args, bool fromSerial) {
   }
   kprintColor(CLR_RST);
   kprintln(F("│ -              │"));
-
   kprint(F("│ UDP   │ 8266 │ OTA Update │ "));
   if (otaEnabled) {
     kprintColor(CLR_YLW);
@@ -2050,7 +1893,6 @@ void handle_netstat(char *args, bool fromSerial) {
   }
   kprintColor(CLR_RST);
   kprintln(F("│ -              │"));
-
   kprint(F("│ WS    │ 81   │ UniAccel   │ "));
   if (accelConnected) {
     kprintColor(CLR_GRN);
@@ -2065,26 +1907,20 @@ void handle_netstat(char *args, bool fromSerial) {
     kprintln(accelHost);
   else
     kprintln(F("-              │"));
-
   kprintln(F("╰───────┴──────┴────────────┴────────────┴────────────────╯"));
-
   sendResponse(true, 200, "Network Status Displayed");
 }
-
 void handle_cron(char *args, bool fromSerial) {
   sendResponse(true, 200, "Cron Table Empty");
 }
-
 void handle_bg(char *args, bool fromSerial) {
   sendResponse(true, 200, "Task moved to background");
 }
-
 void handle_recovery(char *args, bool fromSerial) {
   if (!fromSerial) {
     sendResponse(false, 403, "Recovery only allowed via Serial");
     return;
   }
-
   if (strcmp(args, "unlock") == 0) {
     loginFailCount = 0;
     isLockedOut = false;
