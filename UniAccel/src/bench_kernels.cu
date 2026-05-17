@@ -1,5 +1,3 @@
-
-
 #include "bench_kernels.cuh"
 #include <cuda_runtime.h>
 
@@ -47,11 +45,9 @@ void shared_mem_bench_kernel(float* __restrict__ out)
     __shared__ float sData[1024];
     int tid = threadIdx.x;
 
-    
     sData[tid] = (float)tid + 0.5f;
     __syncthreads();
 
-    
     float val = sData[tid];
     #pragma unroll
     for (int stride = 512; stride > 0; stride >>= 1) {
@@ -60,7 +56,6 @@ void shared_mem_bench_kernel(float* __restrict__ out)
         __syncthreads();
     }
 
-    
     if (tid == 0) *out = sData[0];
 }
 
@@ -70,7 +65,7 @@ void atomic_bench_kernel(int* __restrict__ counters,
                          int mode)
 {
     int tid  = blockIdx.x * blockDim.x + threadIdx.x;
-    
+
     int slot = (mode == 0) ? 0 : (tid / 32) % 32;
 
     #pragma unroll 4
@@ -85,9 +80,29 @@ void memory_bandwidth_kernel(const float4* __restrict__ src,
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid < n)
-        dst[tid] = __ldg(&src[tid]);    
+        dst[tid] = __ldg(&src[tid]);
+}
+
+__global__ __launch_bounds__(256, 1)
+void warp_reduction_bench_kernel(const float* __restrict__ input,
+                                       float* __restrict__ output,
+                                 int n)
+{
+    float sum = 0.0f;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int stride = blockDim.x * gridDim.x;
+
+    for (int i = tid; i < n; i += stride) {
+        sum += __ldg(&input[i]);
+    }
+
+    sum = warpReduceSum(sum);
+
+    if ((threadIdx.x & (WARP_SIZE - 1)) == 0) {
+        atomicAdd(output, sum);
+    }
 }
 
 __global__ void null_kernel() { }
 
-} 
+}
