@@ -18,7 +18,7 @@ import aiohttp
 from aiohttp import web
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 from zeroconf.asyncio import AsyncZeroconf
-
+warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
 warnings.filterwarnings("ignore", message=".*coroutine '.*' was never awaited.*")
 
@@ -138,7 +138,7 @@ class GPUManager:
             dev = drv.Device(0)
             major, minor = dev.compute_capability()
             arch_flag = f"-arch=sm_{major}{minor}"
-            compile_options = [arch_flag, "-O3", "--use_fast_math", "-lineinfo", "--restrict", "-allow-unsupported-compiler", "-Xcompiler", "/wd4819"]
+            compile_options = [arch_flag, "-O3", "--use_fast_math", "-lineinfo", "--restrict", "-allow-unsupported-compiler", "-Xcompiler", "/wd4819", "-diag-suppress", "20044"]
             inc_dirs = []
             for base_dir in [os.getcwd(), os.path.join(os.getcwd(), "UniAccel")]:
                 for sub_dir in [".", "include", "src"]:
