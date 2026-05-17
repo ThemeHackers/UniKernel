@@ -37,13 +37,13 @@ extern void runScript(const char *content);
 #include <ArduinoOTA.h>
 #include <WebServer.h>
 #endif
-extern bool accelChatMode;
+extern volatile bool accelChatMode;
 extern bool telnetEnabled;
 extern bool webEnabled;
 extern bool otaEnabled;
 extern unsigned long otaEndTime;
 extern bool btEnabled;
-extern bool accelConnected;
+extern volatile bool accelConnected;
 extern char accelHost[];
 extern WiFiServer telnetServer;
 extern WiFiClient telnetClient;
@@ -246,7 +246,8 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
       target[slash - path] = '\0';
       path = slash;
     } else {
-      strcpy(target, path);
+      strncpy(target, path, sizeof(target) - 1);
+      target[sizeof(target) - 1] = '\0';
       path = (char *)"/";
     }
     static JsonDocument ldoc;
@@ -257,6 +258,10 @@ ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
     ldoc["action"] = "list";
     uint8_t lbuf[256];
     size_t llen = serializeMsgPack(ldoc, lbuf, sizeof(lbuf));
+    if (llen == 0) {
+      sendResponse(false, 500, "Serialization failed");
+      return;
+    }
     secure_crypt(lbuf, llen);
     webSocket.sendBIN(lbuf, llen);
     kprint(F("Requesting directory from node "));
@@ -347,7 +352,8 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
       target[slash - path] = '\0';
       path = slash;
     } else {
-      strcpy(target, path);
+      strncpy(target, path, sizeof(target) - 1);
+      target[sizeof(target) - 1] = '\0';
       path = (char *)"/";
     }
     static JsonDocument cdoc;
@@ -358,6 +364,10 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
     cdoc["action"] = "read";
     uint8_t cbuf[256];
     size_t clen = serializeMsgPack(cdoc, cbuf, sizeof(cbuf));
+    if (clen == 0) {
+      sendResponse(false, 500, "Serialization failed");
+      return;
+    }
     secure_crypt(cbuf, clen);
     webSocket.sendBIN(cbuf, clen);
     kprint(F("Fetching file from node "));
@@ -401,14 +411,18 @@ ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
     if (!path.startsWith("/")) path = "/" + path;
     if (LittleFS.exists(path)) {
       File f = LittleFS.open(path, "r");
-      if (f) {
-        while (f.available()) {
-          kprint((char)f.read());
-        }
-        f.close();
-        kprintln();
+      if (!f) {
+        sendResponse(false, 500, "Failed to open file");
         return;
       }
+    
+      while (f.available()) {
+        kprint((char)f.read());
+      }
+      f.close();  
+      kprintln();
+      if (!fromSerial) sendResponse(true, 200, "OK");
+      return;
     }
     sendResponse(false, 404, "File not found");
   }
@@ -453,15 +467,27 @@ ICACHE_FLASH_ATTR void handle_touch(char *args, bool fromSerial) {
 }
 ICACHE_FLASH_ATTR void handle_cd(char *args, bool fromSerial) {
   if (strcmp(args, "..") == 0 || strcmp(args, "/") == 0) {
-    strcpy(currentPath, "/");
+    strncpy(currentPath, "/", PATH_LEN - 1);
+    currentPath[PATH_LEN - 1] = '\0';
     sendResponse(true, 200, "Moved to root");
+    return;
+  }
+  if (strstr(args, "..") != NULL) {
+    sendResponse(false, 403, "Path traversal not allowed");
     return;
   }
   int idx = findFile(args, currentPath);
   if (idx != -1 && (vfs[idx].flags & FLAG_ISDIR)) {
-    if (currentPath[strlen(currentPath) - 1] != '/')
-      strcat(currentPath, "/");
-    strcat(currentPath, vfs[idx].name);
+    size_t current_len = strlen(currentPath);
+    size_t name_len = strlen(vfs[idx].name);
+    if (current_len + name_len + 2 > PATH_LEN) {
+      sendResponse(false, 414, "Path too long");
+      return;
+    }
+    if (currentPath[current_len - 1] != '/')
+      strncat(currentPath, "/", PATH_LEN - current_len - 1);
+    strncat(currentPath, vfs[idx].name, PATH_LEN - strlen(currentPath) - 1);
+    currentPath[PATH_LEN - 1] = '\0';
     sendResponse(true, 200, "Directory changed");
   } else {
     sendResponse(false, 404, "Directory not found");
@@ -1426,15 +1452,16 @@ void handle_lfs(char *args, bool fromSerial) {
     String path = filename;
     if (!path.startsWith("/")) path = "/" + path;
     File f = LittleFS.open(path, "r");
-    if (f) {
+    if (!f) {
+      sendResponse(false, 404, "File not found in LittleFS");
+    } else {
+  
       while (f.available()) {
         kprint((char)f.read());
       }
-      f.close();
+      f.close(); 
       kprintln();
       if (!fromSerial) sendResponse(true, 200, "OK");
-    } else {
-      sendResponse(false, 404, "File not found in LittleFS");
     }
   } else if (strncmp(args, "rm ", 3) == 0) {
     char *filename = kTrim(args + 3);
@@ -1606,15 +1633,16 @@ void handle_trigger(char *args, bool fromSerial) {
     }
     sendResponse(true, 200, "Triggers List", &data);
   } else {
-    char cond[16], op[2], act[32];
+    char cond[32] = {0}, op[4] = {0}, act[64] = {0};  
     int val;
-    if (sscanf(args, "%15s %1s %d %31[^\n]", cond, op, &val, act) == 4) {
+    if (sscanf(args, "%31s %3s %d %63[^\n]", cond, op, &val, act) == 4) {  
+      op[3] = '\0'; 
       for (int i = 0; i < MAX_TRIGS; i++) {
         if (!triggerTable[i].active) {
-          strncpy(triggerTable[i].cond, cond, 15);
+          strncpy(triggerTable[i].cond, cond, 31);
           triggerTable[i].op = op[0];
           triggerTable[i].val = val;
-          strncpy(triggerTable[i].action, act, 31);
+          strncpy(triggerTable[i].action, act, 63);
           triggerTable[i].active = true;
           sendResponse(true, 200, "Trigger added");
           return;

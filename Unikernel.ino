@@ -29,7 +29,7 @@ ADC_MODE(ADC_VCC);
 ICACHE_FLASH_ATTR void kprintln(IPAddress ip);
 #endif
 WebSocketsClient webSocket;
-bool accelConnected = false;
+volatile bool accelConnected = false; 
 bool accelStopRequested = true;
 char accelHost[16] = "192.168.1.50";
 int accelPort = 81;
@@ -735,7 +735,7 @@ ICACHE_FLASH_ATTR void setup() {
   unsigned long windowStart = millis();
   Serial.println(
       F("[Hardware] Checking for reset button presses (2s window)..."));
-  while (millis() - windowStart < 2000) {
+  while (((long)(millis() - windowStart)) < 2000) {
     if (digitalRead(bootBtn) == LOW) {
       delay(50);
       if (digitalRead(bootBtn) == LOW) {
@@ -819,16 +819,18 @@ ICACHE_FLASH_ATTR void setup() {
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
   ESP.wdtEnable(5000);
 #endif
-  char check;
-  EEPROM.get(EEPROM_PASS_ADDR, check);
-  if (check == 0xFF || check == 0x00) {
+ 
+  char check = 0;
+  int eepromResult = EEPROM.get(EEPROM_PASS_ADDR, check);
+  if (eepromResult < 0 || check == 0xFF || check == 0x00) {
     needsSetup = true;
     addDmesg(F("Security Setup Required"));
   }
-  uint8_t storedFails;
-  EEPROM.get(EEPROM_FAIL_COUNT_ADDR, storedFails);
-  if (storedFails != 0xFF)
+  uint8_t storedFails = 0xFF;
+  eepromResult = EEPROM.get(EEPROM_FAIL_COUNT_ADDR, storedFails);
+  if (eepromResult >= 0 && storedFails != 0xFF) {
     loginFailCount = storedFails;
+  }
   if (loginFailCount >= MAX_FAIL_COUNT) {
     isLockedOut = true;
     addDmesg(F("CRITICAL: Boot Lockout Active"));
@@ -1032,7 +1034,7 @@ ICACHE_FLASH_ATTR void executeCommand(char *line, bool fromSerial) {
 }
 ICACHE_FLASH_ATTR void processTriggers() {
   static unsigned long lastTrig = 0;
-  if (millis() - lastTrig < 5000)
+  if (((long)(millis() - lastTrig)) < 5000) 
     return;
   lastTrig = millis();
   for (int i = 0; i < MAX_TRIGS; i++) {
@@ -1109,43 +1111,49 @@ ICACHE_FLASH_ATTR void loop() {
     webServer.handleClient();
   if (!accelStopRequested)
     loopUniAccel();
-  if (telnetClient && !telnetClient.connected()) {
-    telnetClient.stop();
-    telnetAuthenticated = false;
-    addDmesg(F("Telnet: Connection cleaned up"));
-  }
-#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
-  if (otaEnabled) {
-    if (millis() > otaEndTime) {
-      otaEnabled = false;
-      addDmesg(F("OTA: Window Closed"));
-    } else {
-      ArduinoOTA.handle();
-      MDNS.update();
+
+  static unsigned long lastCheck = 0;
+  if (((long)(millis() - lastCheck) > 1000)) { 
+  
+    lastCheck = millis();
+    if (telnetClient && !telnetClient.connected()) {
+      telnetClient.stop();
+      telnetAuthenticated = false;
+      addDmesg(F("Telnet: Connection cleaned up"));
     }
-  }
-#endif
-  unsigned long now = millis();
-  static uint8_t lastM = 99;
-  time_t tNow = time(nullptr);
-  struct tm *ti = localtime(&tNow);
-  if (ti && ti->tm_year > 100 && ti->tm_min != lastM) {
-    lastM = ti->tm_min;
-    for (int i = 0; i < MAX_CRON; i++) {
-      if (cronTable[i].active && cronTable[i].h == ti->tm_hour &&
-          cronTable[i].m == ti->tm_min) {
-        char buf[MAX_INPUT_LEN];
-        strncpy(buf, cronTable[i].cmd, MAX_INPUT_LEN - 1);
-        executeCommand(buf, true);
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
+    if (otaEnabled) {
+      if (millis() > otaEndTime) {
+        otaEnabled = false;
+        addDmesg(F("OTA: Window Closed"));
+      } else {
+        ArduinoOTA.handle();
+        MDNS.update();
       }
     }
-  }
-  for (int t = 0; t < MAX_TASKS; t++) {
-    if (taskTable[t].active &&
-        (now - taskTable[t].lastRun >= taskTable[t].interval)) {
-      taskTable[t].lastRun = now;
-      taskTable[t].executionCount++;
-      taskTable[t].func();
+#endif
+    unsigned long now = millis();
+    static uint8_t lastM = 99;
+    time_t tNow = time(nullptr);
+    struct tm *ti = localtime(&tNow);
+    if (ti && ti->tm_year > 100 && ti->tm_min != lastM) {
+      lastM = ti->tm_min;
+      for (int i = 0; i < MAX_CRON; i++) {
+        if (cronTable[i].active && cronTable[i].h == ti->tm_hour &&
+            cronTable[i].m == ti->tm_min) {
+          char buf[MAX_INPUT_LEN];
+          strncpy(buf, cronTable[i].cmd, MAX_INPUT_LEN - 1);
+          executeCommand(buf, true);
+        }
+      }
+    }
+    for (int t = 0; t < MAX_TASKS; t++) {
+      if (taskTable[t].active &&
+          (now - taskTable[t].lastRun >= taskTable[t].interval)) {
+        taskTable[t].lastRun = now;
+        taskTable[t].executionCount++;
+        taskTable[t].func();
+      }
     }
   }
   static bool firstBoot = true;
@@ -1247,11 +1255,11 @@ ICACHE_FLASH_ATTR void loop() {
     else
       lastTelnetActivity = millis();
     if (!fromSerial &&
-        (isLockedOut || (millis() - lastLoginAttempt < loginCooldown))) {
+        (isLockedOut || (((long)(millis() - lastLoginAttempt)) < loginCooldown))) { 
       if (!isLockedOut) {
         kprint_ctx("\rCooldown Active: ", fromSerial);
         char buf[12];
-        ltoa((loginCooldown - (millis() - lastLoginAttempt)) / 1000, buf, 10);
+        ltoa((loginCooldown - (((long)(millis() - lastLoginAttempt)))) / 1000, buf, 10);  
         kprint_ctx(buf, fromSerial);
         kprint_ctx("s left.\r\n", fromSerial);
       }

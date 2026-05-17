@@ -19,14 +19,14 @@ struct BuildStatus {
   unsigned long startTime;
 };
 extern WebSocketsClient webSocket;
-extern bool accelConnected;
+extern volatile bool accelConnected; 
 extern bool accelStopRequested;
 extern char accelHost[16];
 extern int accelPort;
 extern int accelRetryCount;
 extern unsigned long accelStartTime;
-extern bool accelAnimating;
-extern bool accelChatMode;
+extern volatile bool accelAnimating; 
+extern volatile bool accelChatMode;   
 extern char currentModelName[32];
 extern bool accelModelLoaded;
 extern uint16_t gpuTemp;

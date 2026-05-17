@@ -30,8 +30,9 @@ extern void kprintlnLog(const String &msg);
 extern void addDmesg(const __FlashStringHelper *msg);
 
 extern char currentPath[PATH_LEN];
-bool accelAnimating = false;
-bool accelChatMode = false;
+extern volatile bool accelConnected; 
+volatile bool accelAnimating = false;  
+volatile bool accelChatMode = false;  
 char currentModelName[32] = "None";
 bool accelModelLoaded = false;
 uint16_t gpuTemp = 0;
@@ -51,17 +52,37 @@ bool aiInCodeBlock = false;
 bool aiLastWasNL = true;
 int aiBtCount = 0;
 
+
+static bool sessionKeyInitialized = false;
+
 void secure_crypt(uint8_t *data, size_t len) {
+    if (!sessionKeyInitialized) {
+        kprintColor(CLR_RED);
+        kprintln(F("ERROR: Session key not initialized!"));
+        kprintColor(CLR_RST);
+        return;
+    }
     for (size_t i = 0; i < len; i++) {
         data[i] ^= session_key[i % 16];
     }
 }
 
+void initSessionKey() {
+    sessionKeyInitialized = true;
+}
+
+ICACHE_FLASH_ATTR bool hex2int_safe(char c, uint8_t *out) {
+  if (c >= '0' && c <= '9') { *out = c - '0'; return true; }
+  if (c >= 'a' && c <= 'f') { *out = c - 'a' + 10; return true; }
+  if (c >= 'A' && c <= 'F') { *out = c - 'A' + 10; return true; }
+  return false;  
+}
+
+
 ICACHE_FLASH_ATTR uint8_t hex2int(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return 0;
+  uint8_t out;
+  if (hex2int_safe(c, &out)) return out;
+  return 0;  
 }
 
 ICACHE_FLASH_ATTR void displayBuildProgress(float progress, const char* phase, const char* message) {
@@ -159,23 +180,40 @@ ICACHE_FLASH_ATTR void loopUniAccel() {
         }
     }
     static unsigned long lastHb = 0;
-    if (accelConnected && (millis() - lastHb > 10000)) {
+  
+    if (accelConnected && ((long)(millis() - lastHb) > 10000)) {
+        if (!webSocket.isConnected()) {
+            accelConnected = false;
+            return; 
+        }
         int freeR = ESP.getFreeHeap();
         static JsonDocument hdoc; hdoc.clear();
         hdoc["cmd"] = "heartbeat"; hdoc["heap"] = freeR;
         if (freeR < 2000) hdoc["alert"] = "LOW_RAM_OVERLOAD";
         uint8_t hbuf[128]; size_t hlen = serializeMsgPack(hdoc, hbuf, sizeof(hbuf));
+        if (hlen == 0) {
+            kprintln(F("Error: Heartbeat serialization failed"));
+            return;
+        }
         secure_crypt(hbuf, hlen);
         webSocket.sendBIN(hbuf, hlen);
         lastHb = millis();
     }
-    if (accelConnected && accelAnimating && (millis() - lastFrameTime > 100)) {
+    if (accelConnected && accelAnimating && ((long)(millis() - lastFrameTime) > 100)) {
+      if (!webSocket.isConnected()) {
+          accelConnected = false;
+          return; 
+      }
       static JsonDocument doc;
       doc.clear();
       doc["cmd"] = "gpu_physics";
       doc["kernel"] = "render_3d";
       uint8_t buffer[256];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+      if (len == 0) {
+          kprintln(F("Error: Physics command serialization failed"));
+          return;
+      }
       secure_crypt(buffer, len);
       lastRequestStartTime = millis();
       webSocket.sendBIN(buffer, len);
@@ -228,13 +266,18 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       if (argc < 3) { kprintln(F("Usage: accel rexec <ip/all> <cmd>")); return; }
       char* target = argv[1];
       char e_cmd[128] = "";
-      for (int i = 2; i < argc; i++) {
-          strncat(e_cmd, argv[i], sizeof(e_cmd)-strlen(e_cmd)-1);
-          if (i < argc - 1) strncat(e_cmd, " ", sizeof(e_cmd)-strlen(e_cmd)-1);
+      size_t remaining = sizeof(e_cmd) - 1;
+      for (int i = 2; i < argc && remaining > 0; i++) {
+          size_t arg_len = strlen(argv[i]);
+          if (arg_len > remaining) { kprintln(F("Error: Command too long")); return; }
+          strncat(e_cmd, argv[i], remaining);
+          remaining -= arg_len;
+          if (i < argc - 1 && remaining > 1) { strncat(e_cmd, " ", remaining--); }
       }
       static JsonDocument doc; doc.clear();
       doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = e_cmd;
       static uint8_t rexec_buffer[256]; size_t len = serializeMsgPack(doc, rexec_buffer, sizeof(rexec_buffer));
+      if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
       secure_crypt(rexec_buffer, len); webSocket.sendBIN(rexec_buffer, len);
       kprint(F("Rexec on ")); kprint(target); kprint(F(": ")); kprintln(e_cmd); return;
   }
@@ -291,12 +334,17 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   }
   if (strcmp_P(sub, PSTR("broadcast")) == 0 && argc > 1) {
       char msg[256] = "";
-      for (int i = 1; i < argc; i++) {
-          strncat(msg, argv[i], sizeof(msg)-strlen(msg)-1);
-          if (i < argc - 1) strncat(msg, " ", sizeof(msg)-strlen(msg)-1);
+      size_t remaining = sizeof(msg) - 1;
+      for (int i = 1; i < argc && remaining > 0; i++) {
+          size_t arg_len = strlen(argv[i]);
+          if (arg_len > remaining) { kprintln(F("Error: Broadcast message too long")); return; }
+          strncat(msg, argv[i], remaining);
+          remaining -= arg_len;
+          if (i < argc - 1 && remaining > 1) { strncat(msg, " ", remaining--); }
       }
       static JsonDocument doc; doc.clear(); doc["cmd"] = "broadcast"; doc["data"] = msg;
       static uint8_t bcast_buffer[512]; size_t len = serializeMsgPack(doc, bcast_buffer, sizeof(bcast_buffer));
+      if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
       secure_crypt(bcast_buffer, len); webSocket.sendBIN(bcast_buffer, len);
       kprintln(F("Broadcast request sent...")); return;
   }
@@ -345,17 +393,34 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Error: No model loaded. Use 'accel load <model>' first."));
       return;
     }
+    static JsonDocument doc;
+    doc.clear();
+    doc["cmd"] = "chat_start";
+    uint8_t buffer[64];
+    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) {
+      kprintColor(CLR_RED);
+      kprintln(F("Error: Failed to serialize chat_start"));
+      kprintColor(CLR_RST);
+      return;
+    }
+    secure_crypt(buffer, len);
+    webSocket.sendBIN(buffer, len);
     accelChatMode = true;
     accelAnimating = false;
+    kprintColor(CLR_CYN);
+    kprintln(F("Chat mode enabled. Ready for interaction."));
+    kprintColor(CLR_RST);
     return;
   }
   if (strcmp_P(sub, PSTR("connect")) == 0) {
     accelStopRequested = false;
     if (subArgs) {
-      char host[16];
+      char host[32] = {0}; 
       int port = 81;
-      if (sscanf(subArgs, "%15s %d", host, &port) >= 1) {
-        strncpy(accelHost, host, 15);
+      if (sscanf(subArgs, "%31s %d", host, &port) >= 1) { 
+        host[31] = '\0';  
+        strncpy(accelHost, host, sizeof(accelHost) - 1);
         accelPort = port;
       }
     } else {
@@ -391,29 +456,31 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    char filename[16];
-    sscanf(subArgs, "%15s", filename);
-    int fIdx = -1;
-    for (int j = 0; j < MAX_FILES; j++) {
-      if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 &&
-          strcmp(vfs[j].parentDir, currentPath) == 0) {
-        fIdx = j;
-        break;
+    char filename[64] = {0};  
+    if (sscanf(subArgs, "%63s", filename) == 1) {  
+      filename[63] = '\0';
+      int fIdx = -1;
+      for (int j = 0; j < MAX_FILES; j++) {
+        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 &&
+            strcmp(vfs[j].parentDir, currentPath) == 0) {
+          fIdx = j;
+          break;
+        }
       }
+      if (fIdx == -1) {
+        kprintln(F("File not found."));
+        return;
+      }
+      static JsonDocument doc;
+      doc.clear();
+      doc["cmd"] = "gpu_inject";
+      doc["code"] = vfs[fIdx].content;
+      uint8_t buffer[CONTENT_LEN + 128];
+      size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+      secure_crypt(buffer, len);
+      webSocket.sendBIN(buffer, len);
+      kprintln(F("Injecting CUDA code to Host..."));
     }
-    if (fIdx == -1) {
-      kprintln(F("File not found."));
-      return;
-    }
-    static JsonDocument doc;
-    doc.clear();
-    doc["cmd"] = "gpu_inject";
-    doc["code"] = vfs[fIdx].content;
-    uint8_t buffer[CONTENT_LEN + 128];
-    size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-    secure_crypt(buffer, len);
-    webSocket.sendBIN(buffer, len);
-    kprintln(F("Injecting CUDA code to Host..."));
   } else if (strcmp_P(sub, PSTR("encrypt")) == 0) {
     if (!accelConnected) {
       kprintln(F("Not connected."));
@@ -450,37 +517,38 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel research [crack/prime/match/rsa]"));
       return;
     }
-    char rType[16] = {0};
-    sscanf(subArgs, "%15s", rType);
-    if (strcmp(rType, "crack") == 0) {
-      if (strlen(subArgs) < 7) {
-        kprintln(
-            F("Usage: accel research crack [target_hash] [start] [range]"));
-        return;
-      }
-      unsigned int h;
-      int s, r;
-      if (sscanf(subArgs + 6, "%u %d %d", &h, &s, &r) < 3) {
-        kprintln(F("Error: Missing parameters."));
-        kprintln(
-            F("Usage: accel research crack [target_hash] [start] [range]"));
-        return;
-      }
-      static JsonDocument doc;
-      doc.clear();
-      doc["cmd"] = "gpu_exec";
-      doc["kernel"] = "hash_crack";
-      JsonArray data = doc["data"].to<JsonArray>();
-      data.add(h);
-      data.add(s);
-      data.add(r);
-      uint8_t buf[128];
-      size_t len = serializeMsgPack(doc, buf, sizeof(buf));
-      secure_crypt(buf, len);
-      accelStartTime = millis();
-      webSocket.sendBIN(buf, len);
-      kprintln(F("Security Research: Hash crack offloaded to GPU..."));
-    } else if (strcmp(rType, "prime") == 0) {
+    char rType[32] = {0};   
+    if (sscanf(subArgs, "%31s", rType) == 1) {
+      rType[31] = '\0';
+      if (strcmp(rType, "crack") == 0) {
+        if (strlen(subArgs) < 7) {
+          kprintln(
+              F("Usage: accel research crack [target_hash] [start] [range]"));
+          return;
+        }
+        unsigned int h;
+        int s, r;
+        if (sscanf(subArgs + 6, "%u %d %d", &h, &s, &r) < 3) {
+          kprintln(F("Error: Missing parameters."));
+          kprintln(
+              F("Usage: accel research crack [target_hash] [start] [range]"));
+          return;
+        }
+        static JsonDocument doc;
+        doc.clear();
+        doc["cmd"] = "gpu_exec";
+        doc["kernel"] = "hash_crack";
+        JsonArray data = doc["data"].to<JsonArray>();
+        data.add(h);
+        data.add(s);
+        data.add(r);
+        uint8_t buf[128];
+        size_t len = serializeMsgPack(doc, buf, sizeof(buf));
+        secure_crypt(buf, len);
+        accelStartTime = millis();
+        webSocket.sendBIN(buf, len);
+        kprintln(F("Security Research: Hash crack offloaded to GPU..."));
+      } else if (strcmp(rType, "prime") == 0) {
       int s, r;
       if (sscanf(subArgs + 6, "%d %d", &s, &r) < 2) {
         kprintln(F("Usage: accel research prime [start] [range]"));
@@ -548,6 +616,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     } else {
       kprintln(F("Usage: accel research [crack/prime/match/rsa]"));
     }
+    }  
   } else if (strcmp_P(sub, PSTR("bench")) == 0) {
     if (!accelConnected) {
       kprintln(F("Not connected."));
@@ -670,7 +739,14 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     doc["prompt"] = subArgs;
     uint8_t buffer[512];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) {
+      kprintColor(CLR_RED);
+      kprintln(F("Error: Failed to serialize message"));
+      kprintColor(CLR_RST);
+      return;
+    }
     secure_crypt(buffer, len);
+    webSocket.sendBIN(buffer, len);
     kprintln();
     kprintColor(CLR_MAG);
     kprint(F(" ✦ "));
@@ -837,9 +913,23 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   }
 }
 ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
-  if (length == 0 || length > 2048) {
+  if (!payload) {
     kprintColor(CLR_RED);
-    kprintln(F("GPU Response: Invalid payload size"));
+    kprintln(F("GPU Response: Invalid payload (null pointer)"));
+    kprintColor(CLR_RST);
+    return;
+  }
+  if (length == 0) {
+    kprintColor(CLR_RED);
+    kprintln(F("GPU Response: Invalid payload (zero length)"));
+    kprintColor(CLR_RST);
+    return;
+  }
+  if (length > 4096) {
+    kprintColor(CLR_RED);
+    kprint(F("GPU Response: Invalid payload (too large: "));
+    kprint((int)length);
+    kprintln(F(" bytes)"));
     kprintColor(CLR_RST);
     return;
   }
@@ -857,47 +947,82 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       return;
     }
   }
-  if (res.containsKey("build_status")) {
+  if (!res.containsKey("status") || res["status"].isNull()) {
+    kprintColor(CLR_RED);
+    kprintln(F("GPU Response: Missing or invalid status field"));
+    kprintColor(CLR_RST);
+    return;
+  }
+  const char* status = res["status"].as<const char*>();
+  if (!status) {
+    kprintColor(CLR_RED);
+    kprintln(F("GPU Response: Status field is null"));
+    kprintColor(CLR_RST);
+    return;
+  }
+  if (res.containsKey("build_status") && !res["build_status"].isNull()) {
     JsonObject bs = res["build_status"];
-    float progress = bs.containsKey("progress") ? bs["progress"].as<float>() : 0;
-    const char* phase = bs.containsKey("phase") ? bs["phase"].as<const char*>() : "";
-    const char* msg = bs.containsKey("message") ? bs["message"].as<const char*>() : "";
-    displayBuildProgress(progress, phase, msg);
-    if (progress >= 100.0) {
-      showBuildProgress = false;
-      kprintColor(CLR_GRN);
-      kprintln(F("✓ Build completed successfully!"));
-      kprintColor(CLR_RST);
+    if (bs.containsKey("progress") && !bs["progress"].isNull() &&
+        bs.containsKey("phase") && !bs["phase"].isNull() &&
+        bs.containsKey("message") && !bs["message"].isNull()) {
+      float progress = bs["progress"].as<float>();
+      const char* phase = bs["phase"].as<const char*>();
+      const char* msg = bs["message"].as<const char*>();
+      if (phase && msg) {
+        displayBuildProgress(progress, phase, msg);
+        if (progress >= 100.0) {
+          showBuildProgress = false;
+          kprintColor(CLR_GRN);
+          kprintln(F("✓ Build completed successfully!"));
+          kprintColor(CLR_RST);
+        }
+      }
     }
   }
-  if (strcmp(res["status"], "ok") == 0) {
-    bool isRender =
-        res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0;
+  if (strcmp(status, "ok") == 0) {
+    bool isRender = false;
+    if (res.containsKey("kernel") && !res["kernel"].isNull()) {
+      const char* kernel = res["kernel"].as<const char*>();
+      if (kernel) isRender = (strcmp(kernel, "render_3d") == 0);
+    }
     int side = 0;
     if (accelAnimating && isRender) {
-      side = res.containsKey("height") ? res["height"].as<int>() : 24;
+      if (res.containsKey("height") && !res["height"].isNull()) {
+        side = res["height"].as<int>();
+      } else {
+        side = 24;
+      }
       for (int i = 0; i < side + 2; i++)
         kprint("\033[A");
     }
-    if (res.containsKey("telemetry") && !accelChatMode) {
+    if (res.containsKey("telemetry") && !res["telemetry"].isNull() && !accelChatMode) {
       JsonObject tel = res["telemetry"];
-      gpuTemp = tel["temp"].as<int>();
-      gpuUtil = tel["util"].as<int>();
-      gpuMem = tel["mem"].as<int>();
-      gpuPwr = tel["pwr"].as<float>();
-      gpuClk = tel["clk"].as<int>();
-      bool useBox = res.containsKey("display_format") && strcmp(res["display_format"].as<const char*>(), "box") == 0;
-      if (useBox) {
-        displayTelemetryBox();
-      } else {
-        kprintColor(CLR_CYN);
-        kprint(F("[GPU] "));
-        kprintColor(CLR_RST);
-        kprintColor(CLR_RED);
-        kprint(gpuTemp);
-        kprint(F("°C"));
-        kprintColor(CLR_RST);
-        kprint(F(" | "));
+      if (tel.containsKey("temp") && !tel["temp"].isNull() &&
+          tel.containsKey("util") && !tel["util"].isNull() &&
+          tel.containsKey("mem") && !tel["mem"].isNull() &&
+          tel.containsKey("pwr") && !tel["pwr"].isNull() &&
+          tel.containsKey("clk") && !tel["clk"].isNull()) {
+        gpuTemp = tel["temp"].as<int>();
+        gpuUtil = tel["util"].as<int>();
+        gpuMem = tel["mem"].as<int>();
+        gpuPwr = tel["pwr"].as<float>();
+        gpuClk = tel["clk"].as<int>();
+        bool useBox = false;
+        if (res.containsKey("display_format") && !res["display_format"].isNull()) {
+          const char* fmt = res["display_format"].as<const char*>();
+          if (fmt) useBox = (strcmp(fmt, "box") == 0);
+        }
+        if (useBox) {
+          displayTelemetryBox();
+        } else {
+          kprintColor(CLR_CYN);
+          kprint(F("[GPU] "));
+          kprintColor(CLR_RST);
+          kprintColor(CLR_RED);
+          kprint(gpuTemp);
+          kprint(F("°C"));
+          kprintColor(CLR_RST);
+          kprint(F(" | "));
         kprintColor(CLR_GRN);
         kprint(gpuUtil);
         kprint(F("% Util"));
@@ -920,70 +1045,100 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
         kprintln();
       }
     }
-    if (res.containsKey("cmd")) {
-        const char* cmd = res["cmd"];
+    if (res.containsKey("cmd") && !res["cmd"].isNull()) {
+        const char* cmd = res["cmd"].as<const char*>();
+        if (!cmd) return;
         if (strcmp(cmd, "swap_ack") == 0) {
-            kprint(F("[SWAP] Ack for key: ")); kprintln(res["key"].as<const char*>());
+            if (res.containsKey("key") && !res["key"].isNull()) {
+              kprint(F("[SWAP] Ack for key: ")); kprintln(res["key"].as<const char*>());
+            }
         } else if (strcmp(cmd, "swap_data") == 0) {
-            kprint(F("[SWAP] Received: ")); kprintln(res["data"].as<const char*>());
+            if (res.containsKey("data") && !res["data"].isNull()) {
+              kprint(F("[SWAP] Received: ")); kprintln(res["data"].as<const char*>());
+            }
         } else if (strcmp(cmd, "fs_content") == 0) {
             kprintln(F("╭─── Remote File Content ───────────────────────────"));
-            String content = res["data"].as<String>();
-            kprintln(content.c_str());
+            if (res.containsKey("data") && !res["data"].isNull()) {
+              String content = res["data"].as<String>();
+              kprintln(content.c_str());
+            }
             kprintln(F("╰───────────────────────────────────────────────────"));
         } else if (strcmp(cmd, "fs_list") == 0) {
-            kprint(F("Remote Directory: ")); kprintln(res["path"].as<const char*>());
-            JsonArray files = res["files"].as<JsonArray>();
-            for (JsonVariant f : files) {
-                kprint(F("  - ")); kprintln(f.as<const char*>());
+            if (res.containsKey("path") && !res["path"].isNull()) {
+              kprint(F("Remote Directory: ")); kprintln(res["path"].as<const char*>());
+            }
+            if (res.containsKey("files") && !res["files"].isNull()) {
+              JsonArray files = res["files"].as<JsonArray>();
+              for (JsonVariant f : files) {
+                if (!f.isNull()) kprint(F("  - ")), kprintln(f.as<const char*>());
+              }
             }
             if (res.containsKey("callback") && !res["callback"].isNull()) {
-                const char* cb = res["callback"];
-                kprint(F("[PIPE] Triggering callback: ")); kprintln(cb);
-                dispatchCommand((char*)cb, true);
+                const char* cb = res["callback"].as<const char*>();
+                if (cb) {
+                  kprint(F("[PIPE] Triggering callback: ")); kprintln(cb);
+                  dispatchCommand((char*)cb, true);
+                }
             }
         } else if (strcmp(cmd, "cluster_msg") == 0) {
             kprintColor_P(CLR_MAG);
-            kprint(F("[CLUSTER:")); kprint(res["from"].as<const char*>()); kprint(F("] "));
+            if (res.containsKey("from") && !res["from"].isNull()) {
+              kprint(F("[CLUSTER:")); kprint(res["from"].as<const char*>()); kprint(F("] "));
+            }
             kprintColor_P(CLR_RST);
-            kprintln(res["data"].as<const char*>());
+            if (res.containsKey("data") && !res["data"].isNull()) {
+              kprintln(res["data"].as<const char*>());
+            }
         } else if (strcmp(cmd, "cluster_list") == 0) {
             kprintColor_P(CLR_CYN); kprintln(F("╭── Cluster Nodes Discovery ──────────────────────────╮"));
             kprintln(F("│ IP Address        │ Uptime(s) │ Requests │ Status   │"));
             kprintln(F("├───────────────────┼───────────┼──────────┼──────────┤"));
             kprintColor_P(CLR_RST);
-            JsonArray nodes = res["nodes"].as<JsonArray>();
-            for (JsonVariant n : nodes) {
+            if (res.containsKey("nodes") && !res["nodes"].isNull()) {
+              JsonArray nodes = res["nodes"].as<JsonArray>();
+              for (JsonVariant n : nodes) {
+                if (n.isNull() || !n.is<JsonObject>()) continue;
+                if (!n.containsKey("ip") || !n.containsKey("uptime") || !n.containsKey("reqs")) continue;
                 char buf[80];
                 snprintf(buf, sizeof(buf), "│ %-17s │ %-9d │ %-8d │ ",
                     n["ip"].as<const char*>(), n["uptime"].as<int>(), n["reqs"].as<int>());
                 kprint(buf);
                 kprintColor_P(CLR_GRN); kprint(F("ONLINE")); kprintColor_P(CLR_RST);
                 kprintln(F("   │"));
+              }
             }
             kprintColor_P(CLR_CYN);
             kprintln(F("╰───────────────────┴───────────┴──────────┴──────────╯"));
             kprintColor_P(CLR_RST);
         } else if (strcmp(cmd, "remote_exec") == 0) {
-            kprintColor_P(CLR_RED);
-            kprint(F("! [CLUSTER-EXEC] ")); kprintColor_P(CLR_YLW); kprint(res["from"].as<const char*>());
-            kprintColor_P(CLR_WHT); kprint(F(" orders: ")); kprintColor_P(CLR_CYN); kprintln(res["exec_cmd"].as<const char*>());
-            kprintColor_P(CLR_RST);
-            dispatchCommand((char*)res["exec_cmd"].as<const char*>(), false);
+            if (res.containsKey("from") && !res["from"].isNull() &&
+                res.containsKey("exec_cmd") && !res["exec_cmd"].isNull()) {
+              kprintColor_P(CLR_RED);
+              kprint(F("! [CLUSTER-EXEC] ")); kprintColor_P(CLR_YLW); kprint(res["from"].as<const char*>());
+              kprintColor_P(CLR_WHT); kprint(F(" orders: ")); kprintColor_P(CLR_CYN); kprintln(res["exec_cmd"].as<const char*>());
+              kprintColor_P(CLR_RST);
+              dispatchCommand((char*)res["exec_cmd"].as<const char*>(), false);
+            }
         } else if (strcmp(cmd, "kv_update") == 0 || strcmp(cmd, "kv_data") == 0) {
-            kprintColor_P(CLR_MAG); kprint(F("[GLOBAL-KV] "));
-            kprintColor_P(CLR_CYN); kprint(res["key"].as<const char*>());
-            kprintColor_P(CLR_WHT); kprint(F(" -> "));
-            kprintColor_P(CLR_GRN); kprintln(res["val"].as<const char*>());
-            kprintColor_P(CLR_RST);
+            if (res.containsKey("key") && !res["key"].isNull() &&
+                res.containsKey("val") && !res["val"].isNull()) {
+              kprintColor_P(CLR_MAG); kprint(F("[GLOBAL-KV] "));
+              kprintColor_P(CLR_CYN); kprint(res["key"].as<const char*>());
+              kprintColor_P(CLR_WHT); kprint(F(" -> "));
+              kprintColor_P(CLR_GRN); kprintln(res["val"].as<const char*>());
+              kprintColor_P(CLR_RST);
+            }
         } else if (strcmp(cmd, "cluster_top") == 0) {
             kprintColor_P(CLR_YLW);
             kprintln(F("╭── Global Cluster System Monitor ────────────────────╮"));
             kprintln(F("│ IP Address        │ Heap Free │ Uptime   │ Requests │"));
             kprintln(F("├───────────────────┼───────────┼──────────┼──────────┤"));
             kprintColor_P(CLR_RST);
-            JsonArray nodes = res["nodes"].as<JsonArray>();
-            for (JsonVariant n : nodes) {
+            if (res.containsKey("nodes") && !res["nodes"].isNull()) {
+              JsonArray nodes = res["nodes"].as<JsonArray>();
+              for (JsonVariant n : nodes) {
+                if (n.isNull() || !n.is<JsonObject>()) continue;
+                if (!n.containsKey("ip") || !n.containsKey("heap") || !n.containsKey("uptime") || !n.containsKey("reqs")) continue;
                 int heap = n["heap"].as<int>();
                 char buf[80];
                 snprintf(buf, sizeof(buf), "│ %-17s │ ", n["ip"].as<const char*>());
@@ -995,89 +1150,109 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
                 kprintColor_P(CLR_RST);
                 snprintf(buf, sizeof(buf), " │ %-8d │ %-8d │", n["uptime"].as<int>(), n["reqs"].as<int>());
                 kprintln(buf);
+              }
             }
             kprintColor_P(CLR_YLW);
             kprintln(F("╰───────────────────┴───────────┴──────────┴──────────╯"));
             kprintColor_P(CLR_RST);
         } else if (strcmp(cmd, "fs_sync") == 0) {
-            const char* path = res["path"].as<const char*>();
-            const char* data = res["data"].as<const char*>();
-            if (!path || !data) { kprintln(F("[CLUSTER-SYNC:ERR] Malformed packet")); return; }
-            int fIdx = findFile(path, "/");
-            if (fIdx != -1) {
-                strncpy(vfs[fIdx].content, data, sizeof(vfs[fIdx].content)-1);
-                kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:UPDATE] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
-            } else {
-                int newIdx = -1;
-                for (int i = 0; i < MAX_FILES; i++) {
-                    if (!(vfs[i].flags & FLAG_ACTIVE)) {
-                        newIdx = i;
-                        break;
-                    }
-                }
-                if (newIdx != -1) {
-                    vfs[newIdx].flags |= FLAG_ACTIVE;
-                    strncpy(vfs[newIdx].name, path, sizeof(vfs[newIdx].name)-1);
-                    strncpy(vfs[newIdx].parentDir, "/", sizeof(vfs[newIdx].parentDir)-1);
-                    strncpy(vfs[newIdx].content, data, sizeof(vfs[newIdx].content)-1);
-                    kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:NEW] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
-                } else {
-                    kprintln(F("[CLUSTER-SYNC:ERR] No VFS slots available"));
-                }
+            if (res.containsKey("path") && !res["path"].isNull() &&
+                res.containsKey("data") && !res["data"].isNull()) {
+              const char* path = res["path"].as<const char*>();
+              const char* data = res["data"].as<const char*>();
+              if (!path || !data) { kprintln(F("[CLUSTER-SYNC:ERR] Malformed packet")); return; }
+              int fIdx = findFile(path, "/");
+              if (fIdx != -1) {
+                  strncpy(vfs[fIdx].content, data, sizeof(vfs[fIdx].content)-1);
+                  kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:UPDATE] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
+              } else {
+                  int newIdx = -1;
+                  for (int i = 0; i < MAX_FILES; i++) {
+                      if (!(vfs[i].flags & FLAG_ACTIVE)) {
+                          newIdx = i;
+                          break;
+                      }
+                  }
+                  if (newIdx != -1) {
+                      vfs[newIdx].flags |= FLAG_ACTIVE;
+                      strncpy(vfs[newIdx].name, path, sizeof(vfs[newIdx].name)-1);
+                      strncpy(vfs[newIdx].parentDir, "/", sizeof(vfs[newIdx].parentDir)-1);
+                      strncpy(vfs[newIdx].content, data, sizeof(vfs[newIdx].content)-1);
+                      kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:NEW] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
+                  } else {
+                      kprintln(F("[CLUSTER-SYNC:ERR] No VFS slots available"));
+                  }
+              }
             }
         } else if (strcmp(cmd, "proxy_in") == 0) {
-            const char* from = res["from"];
-            const char* data = res["data"];
-            kprintColor_P(CLR_MAG);
-            kprint(F("╭─ REMOTE SESSION: ")); kprint(from); kprintln(F(" ─╮"));
-            kprintColor_P(CLR_RST);
-            kprint(F("│ CMD: ")); kprintln(data);
-            kprintColor_P(CLR_MAG);
-            kprintln(F("╰─────────────────────────────────────╯"));
-            kprintColor_P(CLR_RST);
-            setEnv("PROXY_MASTER", from);
-            dispatchCommand((char*)data, false);
+            if (res.containsKey("from") && !res["from"].isNull() &&
+                res.containsKey("data") && !res["data"].isNull()) {
+              const char* from = res["from"].as<const char*>();
+              const char* data = res["data"].as<const char*>();
+              if (!from || !data) return;
+              kprintColor_P(CLR_MAG);
+              kprint(F("╭─ REMOTE SESSION: ")); kprint(from); kprintln(F(" ─╮"));
+              kprintColor_P(CLR_RST);
+              kprint(F("│ CMD: ")); kprintln(data);
+              kprintColor_P(CLR_MAG);
+              kprintln(F("╰─────────────────────────────────────╯"));
+              kprintColor_P(CLR_RST);
+              setEnv("PROXY_MASTER", from);
+              dispatchCommand((char*)data, false);
+            }
         } else if (strcmp(cmd, "node_fs_req") == 0) {
-            const char* from = res["from"];
-            const char* path = res["path"];
-            const char* action = res["action"];
-            static JsonDocument rdoc; rdoc.clear();
-            rdoc["cmd"] = "node_fs_res"; rdoc["target"] = from; rdoc["path"] = path;
-            if (strcmp(action, "list") == 0) {
-                JsonArray files = rdoc["files"].to<JsonArray>();
-                for (int i = 0; i < 16; i++) {
-                    if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].parentDir, path) == 0) {
-                        files.add(vfs[i].name);
-                    }
-                }
-            } else if (strcmp(action, "read") == 0) {
-                int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/");
-                if (fIdx != -1) rdoc["data"] = vfs[fIdx].content;
-                else rdoc["data"] = "File not found";
+            if (res.containsKey("from") && !res["from"].isNull() &&
+                res.containsKey("path") && !res["path"].isNull() &&
+                res.containsKey("action") && !res["action"].isNull()) {
+              const char* from = res["from"].as<const char*>();
+              const char* path = res["path"].as<const char*>();
+              const char* action = res["action"].as<const char*>();
+              if (!from || !path || !action) return;
+              static JsonDocument rdoc; rdoc.clear();
+              rdoc["cmd"] = "node_fs_res"; rdoc["target"] = from; rdoc["path"] = path;
+              if (strcmp(action, "list") == 0) {
+                  JsonArray files = rdoc["files"].to<JsonArray>();
+                  for (int i = 0; i < 16; i++) {
+                      if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].parentDir, path) == 0) {
+                          files.add(vfs[i].name);
+                      }
+                  }
+              } else if (strcmp(action, "read") == 0) {
+                  int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/");
+                  if (fIdx != -1) rdoc["data"] = vfs[fIdx].content;
+                  else rdoc["data"] = "File not found";
+              }
+              uint8_t rbuf[1024]; size_t rlen = serializeMsgPack(rdoc, rbuf, sizeof(rbuf));
+              secure_crypt(rbuf, rlen);
+              webSocket.sendBIN(rbuf, rlen);
             }
-            uint8_t rbuf[1024]; size_t rlen = serializeMsgPack(rdoc, rbuf, sizeof(rbuf));
-            secure_crypt(rbuf, rlen);
-            webSocket.sendBIN(rbuf, rlen);
         } else if (strcmp(cmd, "node_fs_data") == 0) {
-            kprintColor_P(CLR_CYN);
-            kprint(F("╭── Remote Node File System [")); kprint(res["path"].as<const char*>()); kprintln(F("] ──╮"));
-            kprintColor_P(CLR_RST);
-            if (res.containsKey("files")) {
-                JsonArray files = res["files"].as<JsonArray>();
-                for (JsonVariant f : files) {
-                    kprint(F("  - ")); kprintln(f.as<const char*>());
-                }
-            } else if (res.containsKey("data")) {
-                kprintln(res["data"].as<const char*>());
+            if (res.containsKey("path") && !res["path"].isNull()) {
+              kprintColor_P(CLR_CYN);
+              kprint(F("╭── Remote Node File System [")); kprint(res["path"].as<const char*>()); kprintln(F("] ──╮"));
+              kprintColor_P(CLR_RST);
+              if (res.containsKey("files") && !res["files"].isNull()) {
+                  JsonArray files = res["files"].as<JsonArray>();
+                  for (JsonVariant f : files) {
+                      if (!f.isNull()) {
+                        kprint(F("  - ")); kprintln(f.as<const char*>());
+                      }
+                  }
+              } else if (res.containsKey("data") && !res["data"].isNull()) {
+                  kprintln(res["data"].as<const char*>());
+              }
+              kprintColor_P(CLR_CYN);
+              kprintln(F("╰──────────────────────────────────────────────────╯"));
+              kprintColor_P(CLR_RST);
             }
-            kprintColor_P(CLR_CYN);
-            kprintln(F("╰──────────────────────────────────────────────────╯"));
-            kprintColor_P(CLR_RST);
         } else if (strcmp(cmd, "proxy_data") == 0) {
-            kprintColor_P(CLR_CYN);
-            kprint(F("[")); kprint(res["from"].as<const char*>()); kprint(F("] "));
-            kprintColor_P(CLR_RST);
-            kprintln(res["data"].as<const char*>());
+            if (res.containsKey("from") && !res["from"].isNull() &&
+                res.containsKey("data") && !res["data"].isNull()) {
+              kprintColor_P(CLR_CYN);
+              kprint(F("[")); kprint(res["from"].as<const char*>()); kprint(F("] "));
+              kprintColor_P(CLR_RST);
+              kprintln(res["data"].as<const char*>());
+            }
         }
         if (res.containsKey("model_id")) {
             const char* full_id = res["model_id"].as<const char*>();
@@ -1088,30 +1263,44 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             }
         }
     }
-    if (res.containsKey("exec_cmd")) {
-        const char* e_cmd = res["exec_cmd"];
-        kprintColor_P(CLR_YLW);
-        kprint(F(" ✦ [AGENT] Executing: ")); kprintln(e_cmd);
-        kprintColor_P(CLR_RST);
-        dispatchCommand((char*)e_cmd, false);
+    if (res.containsKey("exec_cmd") && !res["exec_cmd"].isNull()) {
+        const char* e_cmd = res["exec_cmd"].as<const char*>();
+        if (e_cmd) {
+          kprintColor_P(CLR_YLW);
+          kprint(F(" ✦ [AGENT] Executing: ")); kprintln(e_cmd);
+          kprintColor_P(CLR_RST);
+          dispatchCommand((char*)e_cmd, false);
+        }
     }
-    if (res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0) {
-      int w = res.containsKey("width") ? res["width"].as<int>() : 0;
-      int h = res.containsKey("height") ? res["height"].as<int>() : 0;
+    if (res.containsKey("kernel") && !res["kernel"].isNull() && strcmp(res["kernel"].as<const char*>(), "render_3d") == 0) {
+      int w = res.containsKey("width") && !res["width"].isNull() ? res["width"].as<int>() : 0;
+      int h = res.containsKey("height") && !res["height"].isNull() ? res["height"].as<int>() : 0;
       if (w <= 48) {
         float* dPtr = nullptr;
         uint8_t* uPtr = nullptr;
         int tot = 0;
-        if (res.containsKey("hex")) {
-            const char* hex = res["data"].as<const char*>();
-            int hexLen = strlen(hex);
-            tot = hexLen / 2;
-            if (tot > 1024) tot = 1024;
-            for (int i = 0; i < tot; i++) {
-                renderBuffer[i] = (hex2int(hex[i*2]) << 4) | hex2int(hex[i*2+1]);
+        if (res.containsKey("hex") && !res["hex"].isNull()) {
+            const char* hex = res["hex"].as<const char*>();
+            if (hex && strlen(hex) >= 2) {
+              int hexLen = strlen(hex);
+              tot = hexLen / 2;
+              if (tot > 1024) tot = 1024;
+              bool validHex = true;
+              for (int i = 0; i < tot; i++) {
+                  uint8_t hi, lo;
+                 
+                  if (!hex2int_safe(hex[i*2], &hi) || !hex2int_safe(hex[i*2+1], &lo)) {
+                      kprintColor(CLR_RED);
+                      kprintln(F("Invalid hex data in render command"));
+                      kprintColor(CLR_RST);
+                      validHex = false;
+                      break;
+                  }
+                  renderBuffer[i] = (hi << 4) | lo;
+              }
+              if (validHex) uPtr = renderBuffer;
             }
-            uPtr = renderBuffer;
-        } else if (res.containsKey("bin")) {
+        } else if (res.containsKey("bin") && !res["bin"].isNull()) {
             size_t bLen = res["data"].size();
             if (bLen == w * h) {
                 uPtr = (uint8_t*)res["data"].as<const char*>();
@@ -1301,23 +1490,28 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
         if (output.indexOf("Current Model:") >= 0) accelModelLoaded = true;
       }
     }
+    } 
     if (res.containsKey("compute_ms") && !accelChatMode && !accelAnimating) {
-      unsigned long rtt = millis() - lastRequestStartTime;
+      unsigned long rtt = ((long)(millis() - lastRequestStartTime));
       kprint(F("Compute: "));
       kprint(res["compute_ms"].as<float>());
       kprint(F("ms | RTT: "));
       kprint(rtt);
       kprintln(F("ms"));
     }
-  } else if (res.containsKey("status") && strcmp(res["status"], "info") == 0) {
+  } else if (res.containsKey("status") && !res["status"].isNull() && strcmp(res["status"].as<const char*>(), "info") == 0) {
     kprintColor_P(CLR_CYN);
     kprint(F("[GPU] "));
     kprintColor_P(CLR_RST);
-    kprintln(res["message"].as<const char *>());
+    if (res.containsKey("message") && !res["message"].isNull()) {
+      kprintln(res["message"].as<const char *>());
+    }
   } else {
     kprintColor_P(CLR_RED);
     kprint(F("GPU Error: "));
-    kprintln(res["message"].as<const char *>());
+    if (res.containsKey("message") && !res["message"].isNull()) {
+      kprintln(res["message"].as<const char *>());
+    }
     kprintColor_P(CLR_RST);
   }
 }
@@ -1349,6 +1543,7 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
   case WStype_CONNECTED:
     accelConnected = true;
     accelModelLoaded = false;
+    initSessionKey();  
     MDNS.update();
     accelRetryCount = 0;
     addDmesg(F("UniAccel: Connected"));
@@ -1362,8 +1557,10 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
       doc["cmd"] = "gpu_list";
       uint8_t buffer[64];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
-      secure_crypt(buffer, len);
-      webSocket.sendBIN(buffer, len);
+      if (len > 0) {
+        secure_crypt(buffer, len);
+        webSocket.sendBIN(buffer, len);
+      }
     }
     break;
   case WStype_TEXT:
@@ -1386,6 +1583,12 @@ ICACHE_FLASH_ATTR void accelExec(const char *kernel, JsonArray data) {
   doc["data"] = data;
   uint8_t buffer[256];
   size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+  if (len == 0) {
+    kprintColor(CLR_RED);
+    kprintln(F("Error: gpu_exec serialization failed"));
+    kprintColor(CLR_RST);
+    return;
+  }
   secure_crypt(buffer, len);
   accelStartTime = millis();
   webSocket.sendBIN(buffer, len);
@@ -1397,7 +1600,10 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     return;
   }
   char sub[16] = {0};
-  sscanf(args, "%15s", sub);
+  if (sscanf(args, "%15s", sub) != 1) {
+    kprintln(F("Error: Invalid command format"));
+    return;
+  }
   char *subArgs = strchr(args, ' ');
   if (subArgs) subArgs++;
   if (strcmp(sub, "token") == 0) {
@@ -1411,7 +1617,9 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     doc["token"] = subArgs;
     uint8_t buffer[256];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
     secure_crypt(buffer, len);
+    webSocket.sendBIN(buffer, len);
     kprintln(F("Sending token to GPU Host..."));
   } else if (strcmp(sub, "status") == 0) {
     static JsonDocument doc;
@@ -1419,6 +1627,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     doc["cmd"] = "hf_status";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
     secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "offline") == 0) {
@@ -1428,6 +1637,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     doc["value"] = true;
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
     secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Enabling Offline Mode..."));
@@ -1436,6 +1646,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     doc["cmd"] = "hf_list";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
+    if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
     secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "help") == 0) {
