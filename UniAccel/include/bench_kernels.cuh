@@ -2,6 +2,7 @@
 #define BENCH_KERNELS_CUH
 
 #include <cuda_runtime.h>
+#include "cuda_utils.cuh"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,10 +17,12 @@ __global__ void atomic_bench_kernel(int *counters, int iterations, int mode);
 
 __global__ void memory_bandwidth_kernel(const float4 *src, float4 *dst, int n);
 
+__global__ void warp_reduction_bench_kernel(const float* input, float* output, int n);
+
 __global__ void null_kernel();
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif 
+#endif
