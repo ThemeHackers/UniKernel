@@ -1,22 +1,15 @@
-
-
 #include "crypto_kernels.cuh"
 #include <cuda_runtime.h>
 #include <stdint.h>
-
 extern "C" {
-
 __global__ __launch_bounds__(256, 2)
 void encrypt_kernel(unsigned char* __restrict__ data,
                     int len,
                     unsigned char key)
 {
-    
     unsigned int key4 = key | ((unsigned int)key << 8)
                             | ((unsigned int)key << 16)
                             | ((unsigned int)key << 24);
-
-    
     int vlen = len / 16;
     int vid  = blockIdx.x * blockDim.x + threadIdx.x;
     if (vid < vlen) {
@@ -25,15 +18,12 @@ void encrypt_kernel(unsigned char* __restrict__ data,
         v.x ^= key4; v.y ^= key4; v.z ^= key4; v.w ^= key4;
         *v_ptr = v;
     }
-
-    
     int tail_start = vlen * 16;
     int tid        = blockIdx.x * blockDim.x + threadIdx.x;
     int byte_idx   = tail_start + tid;
     if (byte_idx < len)
         data[byte_idx] ^= key;
 }
-
 __device__ __forceinline__
 unsigned int mix(unsigned int a)
 {
@@ -44,7 +34,6 @@ unsigned int mix(unsigned int a)
     a = a ^ (a >> 15);
     return a;
 }
-
 __global__ __launch_bounds__(256, 2)
 void hash_crack_kernel(int* __restrict__ result,
                        unsigned int target_hash,
@@ -53,22 +42,16 @@ void hash_crack_kernel(int* __restrict__ result,
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= range) return;
-
     unsigned int current = (unsigned int)(start_val + idx);
     bool matched = (mix(current) == target_hash);
-
-    
     unsigned ballot = __ballot_sync(0xFFFFFFFF, matched);
     if (ballot) {
-        
         int first_lane = __ffs((int)ballot) - 1;
         if ((threadIdx.x & 31) == first_lane) {
-            
             atomicExch(result, (int)current);
         }
     }
 }
-
 __constant__ unsigned char SBOX[256] = {
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -87,7 +70,6 @@ __constant__ unsigned char SBOX[256] = {
     0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
 };
-
 __global__ __launch_bounds__(256, 2)
 void sbox_encrypt_kernel(unsigned char* __restrict__ data,
                          int len,
@@ -97,5 +79,4 @@ void sbox_encrypt_kernel(unsigned char* __restrict__ data,
     if (idx < len)
         data[idx] = SBOX[__ldg(&data[idx]) ^ key]; 
 }
-
-} 
+}
