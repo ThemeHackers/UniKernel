@@ -8,7 +8,6 @@ void initFS() {
     const char *sysDirs[] = {"home", "dev", "sys", "bin", "mnt/host"};
     int dirsCreated = 0;
 
-
     for (int d = 0; d < 4; d++) {
         bool found = false;
         for (int i = 0; i < MAX_FILES; i++) {
@@ -20,7 +19,7 @@ void initFS() {
                 vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
                 vfs[i].mode = 0755;
                 vfs[i].ownerId = 0;
-                vfs[i].content[0] = '\0'; 
+                vfs[i].content[0] = '\0';
                 dirsCreated++;
                 found = true;
                 break;
@@ -30,7 +29,6 @@ void initFS() {
             addDmesg(F("Warning: Failed to create system directory"));
         }
     }
-
 
     bool errorLogCreated = false;
     for (int i = 0; i < MAX_FILES; i++) {
@@ -45,7 +43,6 @@ void initFS() {
             break;
         }
     }
-
 
     int activeFiles = 0;
     for (int i = 0; i < MAX_FILES; i++) {
