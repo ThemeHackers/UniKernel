@@ -216,7 +216,7 @@ The UniAccel engine leverages CUDA kernels for extreme throughput:
 - **`signal_fft`**: Fast Fourier Transform for real-time sensor data analysis.
 
 ### 7.3 AI-Accelerated Chat (`chat` / `accel chat`)
-UniKernel now features a dedicated AI Shell powered by TinyLlama on the GPU Host.
+UniKernel now features a dedicated AI Shell powered by TinyLlama (TinyLlama/TinyLlama-1.1B-Chat-v1.0) on the GPU Host.
 
 - **`chat`**: Enter the interactive AI Chat mode.
 - **`accel ask <prompt>`**: Query the AI directly from the system shell.
