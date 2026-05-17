@@ -161,8 +161,17 @@ from threading import Thread
 
 ALLOW_GPU_INJECT = False
 
+
+current_hf_model = None
+stop_requested = False
+PARTICLE_STATES = {}
+CLUSTER_KV = {}
+CLUSTER_KV_LOCK = threading.Lock()
+SWAP_STORE = {}
+MOUNT_DIR = os.getcwd()
+
 def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
-    global stop_requested
+    global stop_requested, current_hf_model
     if not gpu_manager.cuda_ctx: return
     try:
         start_time = time.time()
@@ -529,13 +538,15 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                 formatted_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             except:
                 formatted_prompt = f"<|system|>\nYou are a helpful AI assistant running on UniKernel.\n<|user|>\n{prompt}\n<|assistant|>\n"
+            
+            stop_requested = False
             streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
             generation_kwargs = dict(inputs, streamer=streamer, max_new_tokens=1024, do_sample=True, temperature=0.7, pad_token_id=tokenizer.eos_token_id)
             thread = Thread(target=model.generate, kwargs=generation_kwargs)
             thread.start()
+            
             full_response = ""
-            stop_requested = False
             first_chunk = True
             for new_text in streamer:
                 is_ws_closed = getattr(websocket, 'closed', False)
@@ -543,20 +554,26 @@ def process_gpu_request(req, addr, websocket_send_func, loop, websocket):
                     if not is_ws_closed and hasattr(websocket, 'state'):
                         is_ws_closed = str(websocket.state).split('.')[-1] == 'CLOSED'
                 except Exception: pass
+                
                 if stop_requested or is_ws_closed: break
+                
                 clean_text = new_text.replace("<|user|>", "").replace("<|assistant|>", "").replace("<|system|>", "").replace("</s>", "")
                 if first_chunk:
                     clean_text = clean_text.lstrip()
                     if clean_text: first_chunk = False
+                
                 if not clean_text: continue
+                
                 full_response += clean_text
                 delta = {"status": "ok", "cmd": "ask_delta", "data": clean_text}
                 asyncio.run_coroutine_threadsafe(websocket_send_func(delta), loop)
+            
             is_ws_closed = getattr(websocket, 'closed', False)
             try:
                 if not is_ws_closed and hasattr(websocket, 'state'):
                     is_ws_closed = str(websocket.state).split('.')[-1] == 'CLOSED'
             except Exception: pass
+            
             if not is_ws_closed:
                 import re
                 commands_to_exec = re.findall(r'\[EXEC:\s*(.*?)\]', full_response)
