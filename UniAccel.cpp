@@ -41,7 +41,6 @@ float gpuPwr = 0.0f;
 uint16_t gpuClk = 0;
 unsigned long lastFrameTime = 0;
 
-
 BuildStatus buildStatus = {0, "", "", false, 0};
 bool showBuildProgress = false;
 
@@ -65,13 +64,12 @@ ICACHE_FLASH_ATTR uint8_t hex2int(char c) {
   return 0;
 }
 
-
 ICACHE_FLASH_ATTR void displayBuildProgress(float progress, const char* phase, const char* message) {
   buildStatus.progress = progress;
   buildStatus.phase = phase;
   buildStatus.message = message;
   buildStatus.isBuilding = (progress < 100.0);
-  
+
   if (showBuildProgress) {
     kprintColor(CLR_CYN);
     kprint(F("[BUILD] "));
@@ -90,16 +88,14 @@ ICACHE_FLASH_ATTR void displayBuildProgress(float progress, const char* phase, c
   }
 }
 
-
 ICACHE_FLASH_ATTR void displayTelemetryBox() {
-  if (accelChatMode) return;  
-  
+  if (accelChatMode) return;
+
   kprintColor(CLR_CYN);
   kprintln(F("╔════════════════════════════════════════╗"));
   kprintln(F("║        GPU SYSTEM TELEMETRY           ║"));
   kprintln(F("╠════════════════════════════════════════╣"));
   kprintColor(CLR_RST);
-  
 
   kprint(F("║ "));
   kprintColor(CLR_RED);
@@ -107,7 +103,6 @@ ICACHE_FLASH_ATTR void displayTelemetryBox() {
   kprint(gpuTemp);
   kprintln(F("°C"));
   kprintColor(CLR_RST);
-  
 
   kprint(F("║ "));
   kprintColor(CLR_GRN);
@@ -122,7 +117,6 @@ ICACHE_FLASH_ATTR void displayTelemetryBox() {
   kprint(gpuMem);
   kprintln(F("MB"));
   kprintColor(CLR_RST);
-  
 
   kprint(F("║ "));
   kprintColor(CLR_YLW);
@@ -130,7 +124,6 @@ ICACHE_FLASH_ATTR void displayTelemetryBox() {
   kprint(gpuPwr);
   kprintln(F("W"));
   kprintColor(CLR_RST);
-  
 
   kprint(F("║ "));
   kprintColor(CLR_MAG);
@@ -138,7 +131,7 @@ ICACHE_FLASH_ATTR void displayTelemetryBox() {
   kprint(gpuClk);
   kprintln(F("MHz"));
   kprintColor(CLR_RST);
-  
+
   kprintColor(CLR_CYN);
   kprintln(F("╚════════════════════════════════════════╝"));
   kprintColor(CLR_RST);
@@ -148,27 +141,23 @@ ICACHE_FLASH_ATTR void initUniAccel() {
   addDmesg(F("UniAccel: Module V2.1.0-A Loaded"));
 }
 
-void redrawPrompt(); 
+void redrawPrompt();
 
 ICACHE_FLASH_ATTR void loopUniAccel() {
   if (!accelStopRequested) {
     webSocket.loop();
-
-
     if (accelConnected && ESP.getFreeHeap() < 5000) {
         for (int i = 0; i < MAX_FILES; i++) {
             if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR) && strlen(vfs[i].content) > 32) {
                 char swapCmd[128];
                 snprintf(swapCmd, sizeof(swapCmd), "swap %s %s", vfs[i].name, vfs[i].content);
                 handleAccelCommand(swapCmd);
-                vfs[i].flags &= ~FLAG_ACTIVE;  
+                vfs[i].flags &= ~FLAG_ACTIVE;
                 addDmesg(F("V-HEAP: Swapped file to Host to free RAM"));
-                break; 
+                break;
             }
         }
     }
-
-
     static unsigned long lastHb = 0;
     if (accelConnected && (millis() - lastHb > 10000)) {
         int freeR = ESP.getFreeHeap();
@@ -180,12 +169,10 @@ ICACHE_FLASH_ATTR void loopUniAccel() {
         webSocket.sendBIN(hbuf, hlen);
         lastHb = millis();
     }
-
     if (accelConnected && accelAnimating && (millis() - lastFrameTime > 100)) {
       static JsonDocument doc;
       doc.clear();
-   
-      doc["cmd"] = "gpu_physics"; 
+      doc["cmd"] = "gpu_physics";
       doc["kernel"] = "render_3d";
       uint8_t buffer[256];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -220,11 +207,8 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintln(F("Usage: accel [subcommand] [args]"));
     return;
   }
-
   char *sub = argv[0];
   char *subArgs = (argc > 1) ? argv[1] : NULL;
-
- 
   if (strcmp_P(sub, PSTR("nodes")) == 0) {
       static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_list";
       uint8_t buffer[64]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -297,10 +281,10 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   }
   if (strcmp_P(sub, PSTR("swap")) == 0 && argc > 2) {
       static JsonDocument doc; doc.clear();
-      if (strcmp(argv[1], "out") == 0 && argc > 3) { 
-          doc["cmd"] = "swap_out"; doc["key"] = argv[2]; doc["data"] = argv[3]; 
-      } else { 
-          doc["cmd"] = "swap_in"; doc["key"] = argv[2]; 
+      if (strcmp(argv[1], "out") == 0 && argc > 3) {
+          doc["cmd"] = "swap_out"; doc["key"] = argv[2]; doc["data"] = argv[3];
+      } else {
+          doc["cmd"] = "swap_in"; doc["key"] = argv[2];
       }
       static uint8_t swap_buffer[512]; size_t len = serializeMsgPack(doc, swap_buffer, sizeof(swap_buffer));
       secure_crypt(swap_buffer, len); webSocket.sendBIN(swap_buffer, len); return;
@@ -334,8 +318,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       static uint8_t phys_buffer[64]; size_t len = serializeMsgPack(doc, phys_buffer, sizeof(phys_buffer));
       secure_crypt(phys_buffer, len); webSocket.sendBIN(phys_buffer, len); return;
   }
-
-
   if (strcmp_P(sub, PSTR("build")) == 0 || strcmp_P(sub, PSTR("compile")) == 0) {
       if (!accelConnected) {
         kprintln(F("Error: Not connected to GPU Host."));
@@ -348,14 +330,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("║     Starting CUDA Build Process       ║"));
       kprintln(F("╚════════════════════════════════════════╝"));
       kprintColor(CLR_RST);
-      
       static JsonDocument doc; doc.clear(); doc["cmd"] = "build_cu";
       doc["verbose"] = true;
       static uint8_t build_buffer[128]; size_t len = serializeMsgPack(doc, build_buffer, sizeof(build_buffer));
       secure_crypt(build_buffer, len); webSocket.sendBIN(build_buffer, len);
       return;
   }
-
   if (strcmp_P(sub, PSTR("chat")) == 0) {
     if (!accelConnected) {
       kprintln(F("Error: Not connected to GPU Host."));
@@ -366,10 +346,9 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       return;
     }
     accelChatMode = true;
-    accelAnimating = false; 
+    accelAnimating = false;
     return;
   }
-
   if (strcmp_P(sub, PSTR("connect")) == 0) {
     accelStopRequested = false;
     if (subArgs) {
@@ -388,7 +367,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintColor(CLR_RST);
       return;
     }
-
     kprintColor(CLR_CYN);
     kprint(F("Connecting... "));
     kprintColor(CLR_RST);
@@ -396,7 +374,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintColor(CLR_BLU);
     kprint(accelHost);
     kprintColor(CLR_RST);
-
     kprint(F(":"));
     kprintln(accelPort);
     webSocket.begin(accelHost, accelPort, "/");
@@ -410,7 +387,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     accelConnected = false;
     kprintln(F("Disconnected manually."));
   } else if (strcmp_P(sub, PSTR("inject")) == 0) {
-
     if (!accelConnected) {
       kprintln(F("Not connected."));
       return;
@@ -429,7 +405,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("File not found."));
       return;
     }
-
     static JsonDocument doc;
     doc.clear();
     doc["cmd"] = "gpu_inject";
@@ -439,7 +414,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
     kprintln(F("Injecting CUDA code to Host..."));
-
   } else if (strcmp_P(sub, PSTR("encrypt")) == 0) {
     if (!accelConnected) {
       kprintln(F("Not connected."));
@@ -449,27 +423,22 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel encrypt [text] [key]"));
       return;
     }
-
     char textBuf[64] = "";
     int keyVal = 0x5A;
     sscanf(subArgs, "%63s %x", textBuf, &keyVal);
-
     static JsonDocument doc;
     doc.clear();
     doc["cmd"] = "gpu_encrypt";
     doc["text"] = textBuf;
     doc["key"] = (uint8_t)keyVal;
-
     uint8_t msgBuffer[256];
     size_t msgLen = serializeMsgPack(doc, msgBuffer, sizeof(msgBuffer));
     secure_crypt(msgBuffer, msgLen);
-
     accelStartTime = millis();
     webSocket.sendBIN(msgBuffer, msgLen);
     kprintColor(CLR_CYN);
     kprintln(F("Requesting GPU-Parallel XOR Encryption..."));
     kprintColor(CLR_RST);
-
   } else if (strcmp_P(sub, PSTR("research")) == 0) {
     if (!accelConnected) {
       kprintColor(CLR_RED);
@@ -477,14 +446,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintColor(CLR_RST);
       return;
     }
-
     if (!subArgs || strlen(subArgs) == 0) {
       kprintln(F("Usage: accel research [crack/prime/match/rsa]"));
       return;
     }
     char rType[16] = {0};
     sscanf(subArgs, "%15s", rType);
-
     if (strcmp(rType, "crack") == 0) {
       if (strlen(subArgs) < 7) {
         kprintln(
@@ -507,15 +474,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       data.add(h);
       data.add(s);
       data.add(r);
-
       uint8_t buf[128];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
       secure_crypt(buf, len);
-
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
       kprintln(F("Security Research: Hash crack offloaded to GPU..."));
-
     } else if (strcmp(rType, "prime") == 0) {
       int s, r;
       if (sscanf(subArgs + 6, "%d %d", &s, &r) < 2) {
@@ -529,15 +493,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       JsonArray data = doc["data"].to<JsonArray>();
       data.add(s);
       data.add(r);
-
       uint8_t buf[128];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
       secure_crypt(buf, len);
-
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
       kprintln(F("Security Research: Prime search started..."));
-
     } else if (strcmp(rType, "match") == 0) {
       char blob[32], pat[16];
       if (sscanf(subArgs + 6, "%31s %15s", blob, pat) < 2) {
@@ -555,24 +516,19 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       JsonArray p = data.add<JsonArray>();
       for (int i = 0; pat[i]; i++)
         p.add((uint8_t)pat[i]);
-
       uint8_t buf[256];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
       secure_crypt(buf, len);
-
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
       kprintln(F("Security Research: Pattern match offloaded..."));
-
     } else if (strcmp(rType, "rsa") == 0) {
       kprintln(F("RSA 2048-bit High-Throughput Acceleration..."));
-
       static JsonDocument doc;
       doc.clear();
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "rsa_2048";
       JsonArray data = doc["data"].to<JsonArray>();
-
       JsonArray msg = data.add<JsonArray>();
       for (int i = 0; i < 64; i++)
         msg.add((uint32_t)0xDEADBEEF);
@@ -583,15 +539,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       for (int i = 0; i < 64; i++)
         mod.add((uint32_t)0xFFFFFFFF);
       data.add((uint32_t)0x12345678);
-
       uint8_t buf[1024];
       size_t len = serializeMsgPack(doc, buf, sizeof(buf));
       secure_crypt(buf, len);
-
       accelStartTime = millis();
       webSocket.sendBIN(buf, len);
       kprintln(F("Security Research: RSA 2048 offloaded to GPU..."));
-
     } else {
       kprintln(F("Usage: accel research [crack/prime/match/rsa]"));
     }
@@ -603,17 +556,13 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintColor(CLR_MAG);
     kprintln(F("GPU Benchmark"));
     kprintColor(CLR_RST);
-
     kprintln(F("Performing Memory & Compute Stress Analysis..."));
-
     static JsonDocument doc;
     doc.clear();
     doc["cmd"] = "gpu_bench";
-
     uint8_t buf[128];
     size_t len = serializeMsgPack(doc, buf, sizeof(buf));
     secure_crypt(buf, len);
-
     accelStartTime = millis();
     webSocket.sendBIN(buf, len);
     kprintln(F("Request sent. Waiting for deep analysis..."));
@@ -641,7 +590,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintColor(CLR_CYN);
     kprintln(F("╭── Accelerator System Status ──╮"));
     kprintColor(CLR_RST);
-
     kprint(F("│ Status: "));
     if (accelConnected) {
       kprintColor(CLR_GRN);
@@ -676,7 +624,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     webSocket.sendBIN(buffer, len);
     kprintln(F("Requesting model presets..."));
   } else if (strcmp_P(sub, PSTR("unload")) == 0) {
-
     if (!accelConnected) {
       kprintln(F("Not connected."));
       return;
@@ -690,7 +637,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     webSocket.sendBIN(buffer, len);
     kprintln(F("Sending unload request..."));
   } else if (strcmp_P(sub, PSTR("load")) == 0) {
-
     if (!accelConnected) {
       kprintln(F("Not connected."));
       return;
@@ -710,7 +656,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprint(F("Loading model: "));
     kprintln(subArgs);
   } else if (strcmp_P(sub, PSTR("ask")) == 0) {
-
     if (!accelConnected) {
       kprintln(F("Not connected."));
       return;
@@ -726,7 +671,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     uint8_t buffer[512];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
     secure_crypt(buffer, len);
-    webSocket.sendBIN(buffer, len);
     kprintln();
     kprintColor(CLR_MAG);
     kprint(F(" ✦ "));
@@ -738,7 +682,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    accelAnimating = true; 
+    accelAnimating = true;
     static JsonDocument doc;
     doc.clear();
     doc["cmd"] = "gpu_physics";
@@ -824,7 +768,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     }
     char* c_sub = strtok(subArgs, " ");
     char* c_args = strtok(NULL, "");
-    
     static JsonDocument doc; doc.clear();
     if (strcmp(c_sub, "list") == 0) {
         doc["cmd"] = "cluster_list";
@@ -859,7 +802,6 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
         setEnv("PROXY_TARGET", c_args);
         return;
     }
-    
     if (!doc.isNull()) {
         uint8_t buffer[1024]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
         secure_crypt(buffer, len);
@@ -894,18 +836,14 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintColor_P(CLR_RST);
   }
 }
-
 ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
-
   if (length == 0 || length > 2048) {
     kprintColor(CLR_RED);
     kprintln(F("GPU Response: Invalid payload size"));
     kprintColor(CLR_RST);
     return;
   }
-  
   secure_crypt(payload, length);
-
   static JsonDocument res;
   res.clear();
   DeserializationError error = deserializeMsgPack(res, payload, length);
@@ -919,16 +857,12 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       return;
     }
   }
-
-
   if (res.containsKey("build_status")) {
     JsonObject bs = res["build_status"];
     float progress = bs.containsKey("progress") ? bs["progress"].as<float>() : 0;
     const char* phase = bs.containsKey("phase") ? bs["phase"].as<const char*>() : "";
     const char* msg = bs.containsKey("message") ? bs["message"].as<const char*>() : "";
-    
     displayBuildProgress(progress, phase, msg);
-    
     if (progress >= 100.0) {
       showBuildProgress = false;
       kprintColor(CLR_GRN);
@@ -936,19 +870,15 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       kprintColor(CLR_RST);
     }
   }
-
   if (strcmp(res["status"], "ok") == 0) {
     bool isRender =
         res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0;
     int side = 0;
-
     if (accelAnimating && isRender) {
       side = res.containsKey("height") ? res["height"].as<int>() : 24;
-
       for (int i = 0; i < side + 2; i++)
         kprint("\033[A");
     }
-
     if (res.containsKey("telemetry") && !accelChatMode) {
       JsonObject tel = res["telemetry"];
       gpuTemp = tel["temp"].as<int>();
@@ -956,14 +886,10 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       gpuMem = tel["mem"].as<int>();
       gpuPwr = tel["pwr"].as<float>();
       gpuClk = tel["clk"].as<int>();
-
-
       bool useBox = res.containsKey("display_format") && strcmp(res["display_format"].as<const char*>(), "box") == 0;
-      
       if (useBox) {
         displayTelemetryBox();
       } else {
-      
         kprintColor(CLR_CYN);
         kprint(F("[GPU] "));
         kprintColor(CLR_RST);
@@ -994,7 +920,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
         kprintln();
       }
     }
-
     if (res.containsKey("cmd")) {
         const char* cmd = res["cmd"];
         if (strcmp(cmd, "swap_ack") == 0) {
@@ -1030,7 +955,7 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             JsonArray nodes = res["nodes"].as<JsonArray>();
             for (JsonVariant n : nodes) {
                 char buf[80];
-                snprintf(buf, sizeof(buf), "│ %-17s │ %-9d │ %-8d │ ", 
+                snprintf(buf, sizeof(buf), "│ %-17s │ %-9d │ %-8d │ ",
                     n["ip"].as<const char*>(), n["uptime"].as<int>(), n["reqs"].as<int>());
                 kprint(buf);
                 kprintColor_P(CLR_GRN); kprint(F("ONLINE")); kprintColor_P(CLR_RST);
@@ -1046,9 +971,9 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             kprintColor_P(CLR_RST);
             dispatchCommand((char*)res["exec_cmd"].as<const char*>(), false);
         } else if (strcmp(cmd, "kv_update") == 0 || strcmp(cmd, "kv_data") == 0) {
-            kprintColor_P(CLR_MAG); kprint(F("[GLOBAL-KV] ")); 
+            kprintColor_P(CLR_MAG); kprint(F("[GLOBAL-KV] "));
             kprintColor_P(CLR_CYN); kprint(res["key"].as<const char*>());
-            kprintColor_P(CLR_WHT); kprint(F(" -> ")); 
+            kprintColor_P(CLR_WHT); kprint(F(" -> "));
             kprintColor_P(CLR_GRN); kprintln(res["val"].as<const char*>());
             kprintColor_P(CLR_RST);
         } else if (strcmp(cmd, "cluster_top") == 0) {
@@ -1118,7 +1043,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             const char* action = res["action"];
             static JsonDocument rdoc; rdoc.clear();
             rdoc["cmd"] = "node_fs_res"; rdoc["target"] = from; rdoc["path"] = path;
-            
             if (strcmp(action, "list") == 0) {
                 JsonArray files = rdoc["files"].to<JsonArray>();
                 for (int i = 0; i < 16; i++) {
@@ -1127,11 +1051,10 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
                     }
                 }
             } else if (strcmp(action, "read") == 0) {
-                int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/"); 
+                int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/");
                 if (fIdx != -1) rdoc["data"] = vfs[fIdx].content;
                 else rdoc["data"] = "File not found";
             }
-            
             uint8_t rbuf[1024]; size_t rlen = serializeMsgPack(rdoc, rbuf, sizeof(rbuf));
             secure_crypt(rbuf, rlen);
             webSocket.sendBIN(rbuf, rlen);
@@ -1156,19 +1079,15 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             kprintColor_P(CLR_RST);
             kprintln(res["data"].as<const char*>());
         }
-
-      
         if (res.containsKey("model_id")) {
             const char* full_id = res["model_id"].as<const char*>();
             if (full_id) {
-              
                 const char* last_slash = strrchr(full_id, '/');
                 const char* short_name = (last_slash) ? last_slash + 1 : full_id;
                 strncpy(currentModelName, short_name, sizeof(currentModelName)-1);
             }
         }
     }
-
     if (res.containsKey("exec_cmd")) {
         const char* e_cmd = res["exec_cmd"];
         kprintColor_P(CLR_YLW);
@@ -1179,9 +1098,8 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
     if (res.containsKey("kernel") && strcmp(res["kernel"], "render_3d") == 0) {
       int w = res.containsKey("width") ? res["width"].as<int>() : 0;
       int h = res.containsKey("height") ? res["height"].as<int>() : 0;
-
       if (w <= 48) {
-        float* dPtr = nullptr; 
+        float* dPtr = nullptr;
         uint8_t* uPtr = nullptr;
         int tot = 0;
         if (res.containsKey("hex")) {
@@ -1198,7 +1116,7 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             if (bLen == w * h) {
                 uPtr = (uint8_t*)res["data"].as<const char*>();
                 tot = bLen;
-            } else { 
+            } else {
                 dPtr = (float*)res["data"].as<const char*>();
                 tot = bLen / 4;
             }
@@ -1206,7 +1124,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
             JsonArray data = res["data"];
             tot = data.size();
         }
-
         if (dPtr || uPtr || res["data"].is<JsonArray>()) {
             int s = w > 0 ? w : sqrt(tot);
             kprintln(F("--- GPU 3D RENDER ---"));
@@ -1215,7 +1132,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
                 if (dPtr) v = dPtr[i];
                 else if (uPtr) v = uPtr[i] / 255.0f;
                 else v = res["data"][i].as<float>();
-
                 if (v > 0.8f) kprint(F("@"));
                 else if (v > 0.6f) kprint(F("#"));
                 else if (v > 0.4f) kprint(F("*"));
@@ -1235,7 +1151,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       JsonObject data = res["data"];
       kprintColor_P(CLR_GRN);
       kprintln(F("\nBenchmark Results"));
-
       kprintColor_P(CLR_RST);
       kprint(F(" - Memory Bandwidth: "));
       kprintColor_P(CLR_YLW);
@@ -1279,7 +1194,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       kprint(F("Latency: "));
       kprint(res["compute_ms"].as<float>());
       kprintln(F("ms"));
-
     } else if (res.containsKey("kernel") && strcmp(res["kernel"], "rsa_2048") == 0) {
         if (res.containsKey("bin")) {
             uint32_t* rPtr = (uint32_t*)res["data"].as<const char*>();
@@ -1322,7 +1236,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
     } else if (res.containsKey("cmd") && strcmp(res["cmd"], "ask_delta") == 0) {
         if (res.containsKey("data")) {
             String delta = res["data"].as<String>();
-
             if (!aiBlockStarted) {
                 kprintColor_P(CLR_CYN);
                 kprintln(F("╭─── AI Response ───────────────────────────────────"));
@@ -1332,7 +1245,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
                 aiInCodeBlock = false;
                 aiBtCount = 0;
             }
-            
             for (int i=0; i<delta.length(); i++) {
                 if (aiLastWasNL) {
                     kprintColor_P(CLR_CYN);
@@ -1341,7 +1253,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
                     if (aiInCodeBlock) kprintColor_P(CLR_YLW);
                     aiLastWasNL = false;
                 }
-
                 char c = delta[i];
                 if (c == '`') {
                     aiBtCount++;
@@ -1366,12 +1277,10 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
         kprintColor_P(CLR_CYN);
         kprintln(F("╰───────────────────────────────────────────────────"));
         kprintColor_P(CLR_RST);
-        
         aiBlockStarted = false;
         aiInCodeBlock = false;
         aiLastWasNL = true;
         aiBtCount = 0;
-        
         if (accelChatMode) redrawPrompt();
     } else {
       if (res.containsKey("message")) {
@@ -1383,7 +1292,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       }
       if (res.containsKey("data")) {
         String output;
-
         if (res["data"].is<JsonArray>() || res["data"].is<JsonObject>()) {
           serializeJson(res["data"], output);
         } else {
@@ -1401,7 +1309,6 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
       kprint(rtt);
       kprintln(F("ms"));
     }
-
   } else if (res.containsKey("status") && strcmp(res["status"], "info") == 0) {
     kprintColor_P(CLR_CYN);
     kprint(F("[GPU] "));
@@ -1438,7 +1345,6 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
       kprintln(F("[CRITICAL] GPU Acceleration Offline. Link failed after 3 attempts."));
       kprintColor_P(CLR_RST);
     }
-
     break;
   case WStype_CONNECTED:
     accelConnected = true;
@@ -1460,7 +1366,6 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
       webSocket.sendBIN(buffer, len);
     }
     break;
-
   case WStype_TEXT:
   case WStype_BIN:
     onGpuResponse(payload, length);
@@ -1479,11 +1384,9 @@ ICACHE_FLASH_ATTR void accelExec(const char *kernel, JsonArray data) {
   doc["cmd"] = "gpu_exec";
   doc["kernel"] = kernel;
   doc["data"] = data;
-
   uint8_t buffer[256];
   size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
   secure_crypt(buffer, len);
-
   accelStartTime = millis();
   webSocket.sendBIN(buffer, len);
 }
@@ -1509,7 +1412,6 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     uint8_t buffer[256];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
     secure_crypt(buffer, len);
-    webSocket.sendBIN(buffer, len);
     kprintln(F("Sending token to GPU Host..."));
   } else if (strcmp(sub, "status") == 0) {
     static JsonDocument doc;
