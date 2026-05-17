@@ -56,4 +56,13 @@ A major component of the project is **UniAccel**, a distributed computing engine
   ```bash
   nvidia-smi
   ```
-- If you start developing CUDA Code, please read this: "./SKILL.md"
+- If you start developing CUDA Code, please read this: "./agent-skills/SKILL.md"
+
+### Clean Code
+- It's not always necessary to include comments when writing code.
+- If you find any comments in the code, please delete them.
+- And most importantly, when writing code in any programming language, never use comments.
+- If the user requests code cleanup or anything related to code clearing, clean it only in the current project or as specified, and do not clean it in packages or other add-ons.
+
+### When you create files to update any code
+- When you create files to update any code, this doesn't necessarily require modifying the original files you're editing. If you accidentally do, just proceed with the changes and delete the files after the update.
