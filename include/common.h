@@ -5,14 +5,10 @@
 #include <ArduinoJson.h>
 
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
-#define MAX_FILES 12
-#define CONTENT_LEN 256
 #define DMESG_LINES 8
-#define MAX_INPUT_LEN 256
+#define MAX_INPUT_LEN 128
 #define MAX_TASKS 6
 #else
-#define MAX_FILES 4
-#define CONTENT_LEN 64
 #define DMESG_LINES 4
 #define MAX_INPUT_LEN 64
 #define MAX_TASKS 2
@@ -21,8 +17,6 @@
 #define NAME_LEN 12
 #define PATH_LEN 16
 #define DMESG_LEN 32
-#define FLAG_ACTIVE 0x01
-#define FLAG_ISDIR 0x02
 #define XOR_KEY 0x5A
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
 #define BOARD_NAME "esp8266"
@@ -42,9 +36,6 @@ extern bool useColor;
 #define EEPROM_OTA_PASS_ADDR 550
 #define EEPROM_FAIL_COUNT_ADDR 566
 #define EEPROM_BOOT_FILE_ADDR 580
-#define EEPROM_VFS_ADDR 1024
-#define EEPROM_VFS_DATA_ADDR (EEPROM_VFS_ADDR + 2)
-#define VFS_MAGIC 0x55AA
 
 #define PASS_SALT_LEN 16
 
@@ -69,7 +60,7 @@ typedef struct {
     int16_t val;
     char cond[16];
     char action[32];
-    char op;
+    char op[3];
     bool active;
 } Trigger;
 
@@ -87,6 +78,7 @@ typedef struct {
     uint32_t lastRun;
     uint32_t executionCount;
     char name[NAME_LEN];
+    char cmd[32];
     bool active;
 } Task;
 
@@ -103,9 +95,10 @@ typedef struct CommandDef {
     CommandHandler handler;
     bool authRequired;
     const char *help;
+    bool telnetSafe;
 
-    CommandDef(const char *n, CommandHandler h, bool a, const char *hlp)
-        : name(n), handler(h), authRequired(a), help(hlp) {}
+    CommandDef(const char *n, CommandHandler h, bool a, const char *hlp, bool ts = true)
+        : name(n), handler(h), authRequired(a), help(hlp), telnetSafe(ts) {}
 } CommandDef;
 
 void kprint(char c);

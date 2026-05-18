@@ -2,7 +2,6 @@
 #include "../UniAccel.h"
 #include "../include/common.h"
 #include "../include/shell.h"
-#include "../include/vfs.h"
 extern const char CLR_RST[] PROGMEM;
 extern const char CLR_RED[] PROGMEM;
 extern const char CLR_GRN[] PROGMEM;
@@ -12,7 +11,7 @@ extern const char CLR_MAG[] PROGMEM;
 extern const char CLR_CYN[] PROGMEM;
 extern const char CLR_WHT[] PROGMEM;
 #include "../UniAccel.h"
-bool isTelnetSafeCommand(const char *cmd);
+
 #include <EEPROM.h>
 #include <LittleFS.h>
 #include <Wire.h>
@@ -132,9 +131,9 @@ ICACHE_FLASH_ATTR void registerCommands() {
   commandTable.emplace_back("append", handle_append, true,
                             "Append text to file");
   commandTable.emplace_back("info", handle_info, true, "Show file info");
-  commandTable.emplace_back("save", handle_save, true, "Save VFS to EEPROM");
-  commandTable.emplace_back("load", handle_load, true, "Load VFS from EEPROM");
-  commandTable.emplace_back("lfs", handle_lfs, true, "LittleFS management");
+  commandTable.emplace_back("save", handle_save, true, "Deprecated (Autosaved)");
+  commandTable.emplace_back("load", handle_load, true, "Deprecated (Autosaved)");
+  commandTable.emplace_back("lfs", handle_lfs, true, "LittleFS format tool");
   commandTable.emplace_back("chmod", handle_chmod, true,
                             "Change file permissions");
   commandTable.emplace_back("chown", handle_chown, true, "Change file owner");
@@ -154,7 +153,7 @@ ICACHE_FLASH_ATTR void registerCommands() {
   commandTable.emplace_back("ping", handle_ping, false, "Ping a host");
   commandTable.emplace_back("wget", handle_wget, true, "Download from URL");
   commandTable.emplace_back("ntp", handle_ntp, false, "Sync time via NTP");
-  commandTable.emplace_back("ota", handle_ota, true, "Toggle OTA updates");
+
   commandTable.emplace_back("telnet", handle_telnet, true,
                             "Toggle Telnet server");
   commandTable.emplace_back("web", handle_web, true, "Toggle Web server");
@@ -163,11 +162,11 @@ ICACHE_FLASH_ATTR void registerCommands() {
                             "Show network status");
   commandTable.emplace_back("cron", handle_cron, true, "Manage cron tasks");
   commandTable.emplace_back("bg", handle_bg, true, "Run in background");
-  commandTable.emplace_back("boot", handle_boot, true, "Boot configuration");
+  commandTable.emplace_back("boot", handle_boot, true, "Boot configuration", false);
   commandTable.emplace_back("waitwifi", handle_waitwifi, false,
                             "Wait for WiFi connection");
   commandTable.emplace_back("recovery", handle_recovery, true,
-                            "System recovery tools");
+                            "System recovery tools", false);
 }
 bool isSerialSession = true;
 ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
@@ -189,8 +188,7 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
   toLowercase(cmd);
   const char *proxyTarget = getEnv("PROXY_TARGET");
   if (proxyTarget && proxyTarget[0] != '\0' && strcmp(cmd, "exit") != 0) {
-    static JsonDocument pdoc;
-    pdoc.clear();
+    JsonDocument pdoc;
     pdoc["cmd"] = "proxy_req";
     pdoc["target"] = proxyTarget;
     pdoc["data"] = line;
@@ -210,7 +208,7 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
     if (strcmp(cmd, c.name) == 0) {
       bool currentAuth = fromSerial ? serialAuthenticated : telnetAuthenticated;
       if (!fromSerial && telnetAuthenticated) {
-        if (!isTelnetSafeCommand(cmd)) {
+        if (!c.telnetSafe) {
           sendResponse(false, 403, "Command not allowed via network");
           free(cmdLine);
           return;
@@ -230,275 +228,179 @@ ICACHE_FLASH_ATTR void dispatchCommand(char *line, bool fromSerial) {
   free(cmdLine);
 }
 ICACHE_FLASH_ATTR void handle_ls(char *args, bool fromSerial) {
-  if (strcmp(currentPath, "/mnt/host") == 0 ||
-      strncmp(args, "/mnt/host", 9) == 0) {
-    char remoteCmd[32];
-    snprintf(remoteCmd, sizeof(remoteCmd), "mount ls %s", args);
-    handleAccelCommand(remoteCmd);
-    return;
-  }
-  if (strncmp(args, "/mnt/nodes/", 11) == 0) {
-    char target[32];
-    char *path = args + 11;
-    char *slash = strchr(path, '/');
-    if (slash) {
-      strncpy(target, path, slash - path);
-      target[slash - path] = '\0';
-      path = slash;
-    } else {
-      strncpy(target, path, sizeof(target) - 1);
-      target[sizeof(target) - 1] = '\0';
-      path = (char *)"/";
-    }
-    static JsonDocument ldoc;
-    ldoc.clear();
-    ldoc["cmd"] = "node_fs_req";
-    ldoc["target"] = target;
-    ldoc["path"] = path;
-    ldoc["action"] = "list";
-    uint8_t lbuf[256];
-    size_t llen = serializeMsgPack(ldoc, lbuf, sizeof(lbuf));
-    if (llen == 0) {
-      sendResponse(false, 500, "Serialization failed");
-      return;
-    }
-    secure_crypt(lbuf, llen);
-    webSocket.sendBIN(lbuf, llen);
-    kprint(F("Requesting directory from node "));
-    kprintln(target);
-    return;
-  }
   bool isLong = (strcmp(args, "-l") == 0);
+  String path = currentPath;
+  if (!path.endsWith("/")) path += "/";
+  
+#if defined(ESP8266)
+  Dir dir = LittleFS.openDir(path);
   if (!fromSerial) {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
-    for (int i = 0; i < MAX_FILES; i++) {
-      if ((vfs[i].flags & FLAG_ACTIVE) &&
-          strcmp(vfs[i].parentDir, currentPath) == 0) {
+    while (dir.next()) {
+      JsonObject obj = arr.add<JsonObject>();
+      obj["name"] = dir.fileName();
+      obj["type"] = dir.isDirectory() ? "dir" : "file";
+      obj["size"] = dir.fileSize();
+    }
+    sendResponse(true, 200, "OK", &data);
+    return;
+  }
+  
+  bool empty = true;
+  while (dir.next()) {
+    empty = false;
+    if (isLong) {
+      if (dir.isDirectory()) kprintColor(CLR_BLU);
+      else kprintColor(CLR_GRN);
+      kprint(dir.fileName().c_str());
+      kprintColor(CLR_RST);
+      kprint(F("  "));
+      kprint(String((unsigned long)dir.fileSize()).c_str());
+      kprintln(F(" bytes"));
+    } else {
+      if (dir.isDirectory()) kprintColor(CLR_BLU);
+      else kprintColor(CLR_GRN);
+      kprint(dir.fileName().c_str());
+      kprintColor(CLR_RST);
+      kprint(F("  "));
+    }
+  }
+#else
+  File root = LittleFS.open(path);
+  if (!fromSerial) {
+    JsonDocument data;
+    JsonArray arr = data.to<JsonArray>();
+    if (root) {
+      File file = root.openNextFile();
+      while (file) {
         JsonObject obj = arr.add<JsonObject>();
-        obj["name"] = vfs[i].name;
-        obj["type"] = (vfs[i].flags & FLAG_ISDIR) ? "dir" : "file";
+        obj["name"] = file.name();
+        obj["type"] = file.isDirectory() ? "dir" : "file";
+        obj["size"] = file.size();
+        file = root.openNextFile();
       }
     }
     sendResponse(true, 200, "OK", &data);
     return;
   }
+  
   bool empty = true;
-  int fileCount = 0;
-  for (int i = 0; i < MAX_FILES; i++) {
-    if (vfs[i].flags & FLAG_ACTIVE) {
-      bool pathMatch = (strcmp(vfs[i].parentDir, currentPath) == 0);
-      if (pathMatch) {
-        empty = false;
-        fileCount++;
-        if (isLong) {
-          printPermissions(vfs[i].mode, (vfs[i].flags & FLAG_ISDIR));
-          kprint(F(" "));
-          kprint(vfs[i].ownerId == 0 ? F("root  ") : F("guest "));
-          kprint((unsigned long)strlen(vfs[i].content));
-          kprint(F(" "));
-          if (vfs[i].flags & FLAG_ISDIR)
-            kprintColor(CLR_BLU);
-          else
-            kprintColor(CLR_GRN);
-          kprint(vfs[i].name);
-          if (vfs[i].flags & FLAG_ISDIR)
-            kprint(F("/"));
-          kprintColor(CLR_RST);
-          kprintln();
-        } else {
-          if (vfs[i].flags & FLAG_ISDIR)
-            kprintColor(CLR_BLU);
-          else
-            kprintColor(CLR_GRN);
-          kprint(vfs[i].name);
-          if (vfs[i].flags & FLAG_ISDIR)
-            kprint(F("/"));
-          kprintColor(CLR_RST);
-          kprint(F("  "));
-        }
+  if (root) {
+    File file = root.openNextFile();
+    while (file) {
+      empty = false;
+      if (isLong) {
+        if (file.isDirectory()) kprintColor(CLR_BLU);
+        else kprintColor(CLR_GRN);
+        kprint(file.name());
+        kprintColor(CLR_RST);
+        kprint(F("  "));
+        kprint(String((unsigned long)file.size()).c_str());
+        kprintln(F(" bytes"));
+      } else {
+        if (file.isDirectory()) kprintColor(CLR_BLU);
+        else kprintColor(CLR_GRN);
+        kprint(file.name());
+        kprintColor(CLR_RST);
+        kprint(F("  "));
       }
+      file = root.openNextFile();
     }
   }
-  if (strcmp(currentPath, "/dev/") == 0) {
-    if (isLong)
-      kprintln(F("crw-rw-rw- root null\ncrw-rw-rw- root led\ncrw-rw-rw- root "
-                 "a0\ncrw-rw-rw- root a1\ncrw-rw-rw- root a2\ncrw-rw-rw- root "
-                 "a3\ncrw-rw-rw- root a4\ncrw-rw-rw- root a5"));
-    else
-      kprint(F("null  led  a0  a1  a2  a3  a4  a5  "));
-    empty = false;
-  }
-  if (!isLong)
-    kprintln();
-  if (empty && !isLong)
-    kprintln(F("(empty)"));
+#endif
+  if (!isLong && !empty) kprintln();
+  if (empty && !isLong) kprintln(F("(empty)"));
 }
+
 ICACHE_FLASH_ATTR void handle_cat(char *args, bool fromSerial) {
-  if (strncmp(args, "/mnt/host/", 10) == 0 ||
-      strcmp(currentPath, "/mnt/host") == 0) {
-    char remoteCmd[64];
-    snprintf(remoteCmd, sizeof(remoteCmd), "mount cat %s", args);
-    handleAccelCommand(remoteCmd);
+  if (strlen(args) == 0) {
+    sendResponse(false, 400, "Usage: cat <file>");
     return;
   }
-  if (strncmp(args, "/mnt/nodes/", 11) == 0) {
-    char target[32];
-    char *path = args + 11;
-    char *slash = strchr(path, '/');
-    if (slash) {
-      strncpy(target, path, slash - path);
-      target[slash - path] = '\0';
-      path = slash;
-    } else {
-      strncpy(target, path, sizeof(target) - 1);
-      target[sizeof(target) - 1] = '\0';
-      path = (char *)"/";
-    }
-    static JsonDocument cdoc;
-    cdoc.clear();
-    cdoc["cmd"] = "node_fs_req";
-    cdoc["target"] = target;
-    cdoc["path"] = path;
-    cdoc["action"] = "read";
-    uint8_t cbuf[256];
-    size_t clen = serializeMsgPack(cdoc, cbuf, sizeof(cbuf));
-    if (clen == 0) {
-      sendResponse(false, 500, "Serialization failed");
-      return;
-    }
-    secure_crypt(cbuf, clen);
-    webSocket.sendBIN(cbuf, clen);
-    kprint(F("Fetching file from node "));
-    kprintln(target);
-    return;
+  String path = args;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += args;
   }
-  if (strcmp(currentPath, "/dev/") == 0 || strcmp(args, "dev/vcc") == 0 || strcmp(args, "/dev/vcc") == 0 ||
-      strcmp(args, "dev/temp") == 0 || strcmp(args, "/dev/temp") == 0 ||
-      strcmp(args, "dev/led") == 0 || strcmp(args, "/dev/led") == 0) {
-    if (strcmp(args, "null") == 0)
-      return;
-    if (strcmp(args, "led") == 0 || strstr(args, "led")) {
-      kprintln(digitalRead(LED_BUILTIN) == LOW ? "1" : "0");
-      return;
-    }
-    if (args[0] == 'a' && isdigit(args[1])) {
-      kprintln(analogRead(args[1] - '0'));
-      return;
-    }
-    if (strcmp(args, "temp") == 0 || strstr(args, "temp")) {
-      kprintln(25 + (millis() % 5));
-      return;
-    }
-    if (strcmp(args, "vcc") == 0 || strstr(args, "vcc")) {
-      kprintln(ESP.getVcc());
-      return;
-    }
-  }
-  int idx = findFile(args, currentPath);
-  if (idx != -1) {
-    if (!fromSerial) {
-      static JsonDocument data;
-      data.clear();
-      data["content"] = vfs[idx].content;
-      sendResponse(true, 200, "OK", &data);
-    } else {
-      kprintln(vfs[idx].content);
-    }
-  } else {
-    String path = args;
-    if (!path.startsWith("/")) path = "/" + path;
-    if (LittleFS.exists(path)) {
-      File f = LittleFS.open(path, "r");
-      if (!f) {
-        sendResponse(false, 500, "Failed to open file");
-        return;
-      }
-    
-      while (f.available()) {
-        kprint((char)f.read());
-      }
-      f.close();  
-      kprintln();
-      if (!fromSerial) sendResponse(true, 200, "OK");
-      return;
-    }
+  if (!LittleFS.exists(path)) {
     sendResponse(false, 404, "File not found");
+    return;
   }
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    sendResponse(false, 500, "Failed to open");
+    return;
+  }
+  if (!fromSerial) {
+    JsonDocument data;
+    data["content"] = f.readString();
+    sendResponse(true, 200, "OK", &data);
+  } else {
+    while(f.available()) {
+      kprint((char)f.read());
+    }
+    kprintln();
+  }
+  f.close();
 }
+
 ICACHE_FLASH_ATTR void handle_mkdir(char *args, bool fromSerial) {
-  if (!isValidFsName(args)) {
-    sendResponse(false, 400, "Invalid name");
-    return;
-  }
-  for (int i = 0; i < MAX_FILES; i++) {
-    if (!(vfs[i].flags & FLAG_ACTIVE)) {
-      safeStrncpy(vfs[i].name, args, NAME_LEN);
-      safeStrncpy(vfs[i].parentDir, currentPath, PATH_LEN);
-      vfs[i].flags = FLAG_ACTIVE | FLAG_ISDIR;
-      vfs[i].mode = 0755;
-      vfs[i].ownerId = 0;
-      vfs[i].content[0] = '\0';
-      sendResponse(true, 201, "Directory created");
-      return;
-    }
-  }
-  sendResponse(false, 507, "FS full");
+  sendResponse(true, 200, "Directory implicitly supported by LittleFS");
 }
+
 ICACHE_FLASH_ATTR void handle_touch(char *args, bool fromSerial) {
-  if (!isValidFsName(args)) {
-    sendResponse(false, 400, "Invalid name");
-    return;
+  String path = args;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += args;
   }
-  for (int i = 0; i < MAX_FILES; i++) {
-    if (!(vfs[i].flags & FLAG_ACTIVE)) {
-      safeStrncpy(vfs[i].name, args, NAME_LEN);
-      safeStrncpy(vfs[i].parentDir, currentPath, PATH_LEN);
-      vfs[i].flags = FLAG_ACTIVE;
-      vfs[i].mode = 0644;
-      vfs[i].ownerId = 0;
-      vfs[i].content[0] = '\0';
-      sendResponse(true, 201, "File created");
-      return;
-    }
+  File f = LittleFS.open(path, "a");
+  if (f) {
+    f.close();
+    sendResponse(true, 201, "File created");
+  } else {
+    sendResponse(false, 500, "Failed to create file");
   }
-  sendResponse(false, 507, "FS full");
 }
+
 ICACHE_FLASH_ATTR void handle_cd(char *args, bool fromSerial) {
-  if (strcmp(args, "..") == 0 || strcmp(args, "/") == 0) {
-    strncpy(currentPath, "/", PATH_LEN - 1);
-    currentPath[PATH_LEN - 1] = '\0';
+  if (strcmp(args, "/") == 0) {
+    strcpy(currentPath, "/");
     sendResponse(true, 200, "Moved to root");
     return;
   }
-  if (strstr(args, "..") != NULL) {
-    sendResponse(false, 403, "Path traversal not allowed");
-    return;
-  }
-  int idx = findFile(args, currentPath);
-  if (idx != -1 && (vfs[idx].flags & FLAG_ISDIR)) {
-    size_t current_len = strlen(currentPath);
-    size_t name_len = strlen(vfs[idx].name);
-    if (current_len + name_len + 2 > PATH_LEN) {
-      sendResponse(false, 414, "Path too long");
+  if (strcmp(args, "..") == 0) {
+    if (strcmp(currentPath, "/") == 0) {
+      sendResponse(true, 200, "Already at root");
       return;
     }
-    if (currentPath[current_len - 1] != '/')
-      strncat(currentPath, "/", PATH_LEN - current_len - 1);
-    strncat(currentPath, vfs[idx].name, PATH_LEN - strlen(currentPath) - 1);
-    currentPath[PATH_LEN - 1] = '\0';
+    char* lastSlash = strrchr(currentPath, '/');
+    if (lastSlash && lastSlash != currentPath) {
+      *lastSlash = '\0';
+    } else {
+      strcpy(currentPath, "/");
+    }
     sendResponse(true, 200, "Directory changed");
-  } else {
-    sendResponse(false, 404, "Directory not found");
+    return;
   }
+  String path = String(currentPath);
+  if (!path.endsWith("/")) path += "/";
+  path += args;
+  
+  strncpy(currentPath, path.c_str(), PATH_LEN - 1);
+  currentPath[PATH_LEN - 1] = '\0';
+  sendResponse(true, 200, "Directory changed");
 }
+
 ICACHE_FLASH_ATTR void handle_pwd(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["path"] = currentPath;
   sendResponse(true, 200, "OK", &data);
 }
+
 ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
   char *redir = strchr(args, '>');
   if (redir) {
@@ -506,52 +408,33 @@ ICACHE_FLASH_ATTR void handle_echo(char *args, bool fromSerial) {
     char *filename = kTrim(redir + 1);
     char *text = kTrim(args);
     stripQuotes(text);
-    if (isSystemProtected(filename) && !fromSerial) {
-      sendResponse(false, 403,
-                   "Protected system file (Serial access required)");
-      return;
+    
+    String path = filename;
+    if (!path.startsWith("/")) {
+      path = String(currentPath);
+      if (!path.endsWith("/")) path += "/";
+      path += filename;
     }
-    if (strcmp(currentPath, "/dev/") == 0) {
-      if (strcmp(filename, "led") == 0) {
-        pinMode(LED_BUILTIN, OUTPUT);
-        digitalWrite(
-            LED_BUILTIN,
-            (text[0] == '1' || text[0] == 'H' || text[0] == 'h') ? LOW : HIGH);
-        sendResponse(true, 200, "LED updated");
-        return;
-      }
-    }
-    int idx = findFile(filename, currentPath);
-    if (idx == -1) {
-      for (int i = 0; i < MAX_FILES; i++) {
-        if (!(vfs[i].flags & FLAG_ACTIVE)) {
-          idx = i;
-          safeStrncpy(vfs[idx].name, filename, NAME_LEN);
-          safeStrncpy(vfs[idx].parentDir, currentPath, PATH_LEN);
-          vfs[idx].flags = FLAG_ACTIVE;
-          vfs[idx].mode = 0644;
-          vfs[idx].ownerId = 0;
-          break;
-        }
-      }
-    }
-    if (idx != -1) {
-      safeStrncpy(vfs[idx].content, text, CONTENT_LEN);
+    
+    File f = LittleFS.open(path, "w");
+    if (f) {
+      f.print(text);
+      f.close();
       sendResponse(true, 200, "File updated");
     } else {
-      sendResponse(false, 507, "FS full");
+      sendResponse(false, 500, "Failed to open file");
     }
   } else {
     if (fromSerial) {
       kprintln(args);
     } else {
-      static JsonDocument data;
-      data.clear();
+      JsonDocument data;
       data["output"] = args;
       sendResponse(true, 200, "OK", &data);
     }
   }
 }
+
 ICACHE_FLASH_ATTR void handle_i2c(char *args, bool fromSerial) {
   if (strcmp(args, "help") == 0 || args[0] == '\0') {
     if (fromSerial) {
@@ -563,8 +446,7 @@ ICACHE_FLASH_ATTR void handle_i2c(char *args, bool fromSerial) {
     return;
   }
   if (strcmp(args, "scan") == 0) {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
     for (uint8_t addr = 1; addr < 127; addr++) {
       Wire.beginTransmission(addr);
@@ -586,8 +468,7 @@ ICACHE_FLASH_ATTR void handle_date(char *args, bool fromSerial) {
     kprintln(dateStr ? dateStr : "Unknown Date");
     kprintColor(CLR_RST);
   } else {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     data["timestamp"] = (unsigned long)now;
     data["human"] = dateStr ? dateStr : "";
     sendResponse(true, 200, "OK", &data);
@@ -621,8 +502,7 @@ ICACHE_FLASH_ATTR void handle_on(char *args, bool fromSerial) {
   if (pin >= 0 && pin <= 19) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, HIGH);
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     data["pin"] = pin;
     data["state"] = "HIGH";
     sendResponse(true, 200, "Pin set HIGH", &data);
@@ -635,8 +515,7 @@ ICACHE_FLASH_ATTR void handle_off(char *args, bool fromSerial) {
   if (pin >= 0 && pin <= 19) {
     pinMode(pin, OUTPUT);
     digitalWrite(pin, LOW);
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     data["pin"] = pin;
     data["state"] = "LOW";
     sendResponse(true, 200, "Pin set LOW", &data);
@@ -712,8 +591,7 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
                "========"));
     kprintColor_P(CLR_RST);
   } else {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
     for (const auto &c : commandTable) {
       JsonObject obj = arr.add<JsonObject>();
@@ -724,25 +602,24 @@ ICACHE_FLASH_ATTR void handle_help(char *args, bool fromSerial) {
   }
 }
 ICACHE_FLASH_ATTR void handle_uptime(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["uptime_sec"] = millis() / 1000;
   sendResponse(true, 200, "OK", &data);
 }
 ICACHE_FLASH_ATTR void handle_rm(char *args, bool fromSerial) {
-  int idx = findFile(args, currentPath);
-  if (idx != -1) {
-    if (isSystemProtected(vfs[idx].name) && !fromSerial) {
-      sendResponse(false, 403,
-                   "Protected system file (Serial access required)");
-      return;
-    }
-    vfs[idx].flags &= ~FLAG_ACTIVE;
+  String path = args;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += args;
+  }
+  if (LittleFS.remove(path)) {
     sendResponse(true, 200, "File removed");
   } else {
     sendResponse(false, 404, "File not found");
   }
 }
+
 ICACHE_FLASH_ATTR void handle_mv(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -750,22 +627,18 @@ ICACHE_FLASH_ATTR void handle_mv(char *args, bool fromSerial) {
     return;
   }
   *sp = '\0';
-  char *src = args;
-  char *dst = kTrim(sp + 1);
-  int idx = findFile(src, currentPath);
-  if (idx != -1) {
-    if ((isSystemProtected(vfs[idx].name) || isSystemProtected(dst)) &&
-        !fromSerial) {
-      sendResponse(false, 403,
-                   "Protected system file (Serial access required)");
-      return;
-    }
-    safeStrncpy(vfs[idx].name, dst, NAME_LEN);
-    sendResponse(true, 200, "File renamed");
+  String src = args;
+  String dst = kTrim(sp + 1);
+  if (!src.startsWith("/")) { src = String(currentPath) + (String(currentPath).endsWith("/") ? "" : "/") + src; }
+  if (!dst.startsWith("/")) { dst = String(currentPath) + (String(currentPath).endsWith("/") ? "" : "/") + dst; }
+  
+  if (LittleFS.rename(src, dst)) {
+    sendResponse(true, 200, "File renamed/moved");
   } else {
-    sendResponse(false, 404, "Source file not found");
+    sendResponse(false, 500, "Rename failed");
   }
 }
+
 ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -773,27 +646,22 @@ ICACHE_FLASH_ATTR void handle_cp(char *args, bool fromSerial) {
     return;
   }
   *sp = '\0';
-  char *src = args;
-  char *dst = kTrim(sp + 1);
-  int sIdx = findFile(src, currentPath);
-  if (sIdx == -1) {
-    sendResponse(false, 404, "Source not found");
-    return;
-  }
-  if ((isSystemProtected(src) || isSystemProtected(dst)) && !fromSerial) {
-    sendResponse(false, 403, "Protected system file (Serial access required)");
-    return;
-  }
-  for (int i = 0; i < MAX_FILES; i++) {
-    if (!(vfs[i].flags & FLAG_ACTIVE)) {
-      memcpy(&vfs[i], &vfs[sIdx], sizeof(RAMFile));
-      safeStrncpy(vfs[i].name, dst, NAME_LEN);
-      sendResponse(true, 201, "File copied");
-      return;
-    }
-  }
-  sendResponse(false, 507, "FS full");
+  String src = args;
+  String dst = kTrim(sp + 1);
+  if (!src.startsWith("/")) { src = String(currentPath) + (String(currentPath).endsWith("/") ? "" : "/") + src; }
+  if (!dst.startsWith("/")) { dst = String(currentPath) + (String(currentPath).endsWith("/") ? "" : "/") + dst; }
+  
+  File sf = LittleFS.open(src, "r");
+  if (!sf) { sendResponse(false, 404, "Source not found"); return; }
+  File df = LittleFS.open(dst, "w");
+  if (!df) { sf.close(); sendResponse(false, 500, "Dest open failed"); return; }
+  
+  while(sf.available()) { df.write(sf.read()); }
+  sf.close();
+  df.close();
+  sendResponse(true, 201, "File copied");
 }
+
 ICACHE_FLASH_ATTR void handle_pinmode(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
   if (!sp) {
@@ -824,8 +692,7 @@ ICACHE_FLASH_ATTR void handle_write(char *args, bool fromSerial) {
 ICACHE_FLASH_ATTR void handle_read(char *args, bool fromSerial) {
   int pin = atoi_safe(args);
   int val = digitalRead(pin);
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["pin"] = pin;
   data["value"] = val;
   sendResponse(true, 200, "OK", &data);
@@ -867,9 +734,11 @@ ICACHE_FLASH_ATTR void handle_neofetch(char *args, bool fromSerial) {
   kprintColor(CLR_YLW);
   kprint(F("  '---'-----'---'     "));
   kprintColor(CLR_WHT);
-  kprint(F("VFS: "));
-  kprint(MAX_FILES);
-  kprintln(F(" slots"));
+  kprint(F("FS Total: "));
+  FSInfo fs_info;
+  LittleFS.info(fs_info);
+  kprint(fs_info.totalBytes / 1024);
+  kprintln(F(" KB"));
   kprintln(F(""));
   kprint(F("  "));
   kprintColor(CLR_RED);
@@ -890,8 +759,7 @@ ICACHE_FLASH_ATTR void handle_neofetch(char *args, bool fromSerial) {
   kprintln();
 }
 void handle_free(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["free_heap"] = ESP.getFreeHeap();
   sendResponse(true, 200, "OK", &data);
 }
@@ -920,8 +788,7 @@ void handle_wifi(char *args, bool fromSerial) {
     if (fromSerial)
       kprintln(F("Scanning WiFi networks..."));
     int n = WiFi.scanNetworks();
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
     for (int i = 0; i < n; ++i) {
       JsonObject net = arr.add<JsonObject>();
@@ -1022,8 +889,7 @@ void handle_wifi(char *args, bool fromSerial) {
     }
     return;
   }
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   int status = WiFi.status();
   const char *sMap[] = {"Idle",        "No SSID",        "Scan Completed",
                         "Connected",   "Connect Failed", "Connection Lost",
@@ -1039,8 +905,7 @@ void handle_clear(char *args, bool fromSerial) {
   Serial.print("\033[2J\033[H");
 }
 void handle_dmesg(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   JsonArray arr = data.to<JsonArray>();
   for (int i = 0; i < DMESG_LINES; i++) {
     int idx = (dmesgIndex + i) % DMESG_LINES;
@@ -1055,16 +920,14 @@ void handle_dmesg(char *args, bool fromSerial) {
 void handle_df(char *args, bool fromSerial) {
   FSInfo info;
   LittleFS.info(info);
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["total"] = info.totalBytes;
   data["used"] = info.usedBytes;
   data["free"] = info.totalBytes - info.usedBytes;
   sendResponse(true, 200, "Disk Usage", &data);
 }
 void handle_hwinfo(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["chip_id"] = ESP.getChipId();
   data["flash_size"] = ESP.getFlashChipRealSize();
   data["cpu_freq"] = ESP.getCpuFreqMHz();
@@ -1118,16 +981,24 @@ void handle_chat(char *args, bool fromSerial) {
   }
 }
 void handle_sh(char *args, bool fromSerial) {
-  int idx = findFile(args, currentPath);
-  if (idx != -1) {
+  String path = args;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += args;
+  }
+  File f = LittleFS.open(path, "r");
+  if (f) {
     addDmesg(F("sh: running script"));
-    runScript(vfs[idx].content);
-    if (!fromSerial)
-      sendResponse(true, 200, "Script executed");
+    String content = f.readString();
+    f.close();
+    runScript(content.c_str());
+    if (!fromSerial) sendResponse(true, 200, "Script executed");
   } else {
     sendResponse(false, 404, "Script not found");
   }
 }
+
 void handle_waitwifi(char *args, bool fromSerial) {
   if (fromSerial)
     kprintln(F("Waiting for WiFi connection..."));
@@ -1163,8 +1034,7 @@ void handle_whoami(char *args, bool fromSerial) {
   sendResponse(true, 200, currentAuth ? "root" : "guest");
 }
 void handle_uname(char *args, bool fromSerial) {
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   data["sys"] = "UniKernel";
   data["node"] = BOARD_NAME;
   data["release"] = "2.0.0-stable";
@@ -1205,8 +1075,7 @@ void handle_alias(char *args, bool fromSerial) {
     return;
   }
   if (strlen(args) == 0) {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
     for (int i = 0; i < MAX_ALIAS; i++) {
       if (aliasTable[i].active) {
@@ -1254,8 +1123,7 @@ void handle_env(char *args, bool fromSerial) {
     }
     return;
   }
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   JsonObject obj = data.to<JsonObject>();
   obj["VCC"] = ESP.getVcc();
   obj["RAM"] = freeMemory();
@@ -1312,14 +1180,7 @@ void handle_sys(char *args, bool fromSerial) {
     kprintln(score);
   } else if (strcmp(args, "backup") == 0) {
     kprintln(F("--- UniKernel VFS Backup Script ---"));
-    for (int i = 0; i < MAX_FILES; i++) {
-      if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR)) {
-        kprint(F("echo \""));
-        kprint(vfs[i].content);
-        kprint(F("\" > "));
-        kprintln(vfs[i].name);
-      }
-    }
+    kprintln(F("Backup via VFS is no longer supported (Files are natively in LittleFS)."));
   } else {
     handle_neofetch(args, fromSerial);
   }
@@ -1348,8 +1209,7 @@ void handle_ps(char *args, bool fromSerial) {
     }
     return;
   }
-  static JsonDocument data;
-  data.clear();
+  JsonDocument data;
   JsonArray arr = data.to<JsonArray>();
   for (int i = 0; i < MAX_TASKS; i++) {
     if (taskTable[i].active) {
@@ -1372,144 +1232,53 @@ void handle_append(char *args, bool fromSerial) {
   char *filename = args;
   char *text = kTrim(sp + 1);
   stripQuotes(text);
-  int idx = findFile(filename, currentPath);
-  if (idx != -1) {
-    if (isSystemProtected(vfs[idx].name) && !fromSerial) {
-      sendResponse(false, 403,
-                   "Protected system file (Serial access required)");
-      return;
-    }
-    strncat(vfs[idx].content, text, CONTENT_LEN - strlen(vfs[idx].content) - 1);
+  
+  String path = filename;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += filename;
+  }
+  
+  File f = LittleFS.open(path, "a");
+  if (f) {
+    f.print(text);
+    f.close();
     sendResponse(true, 200, "Text appended");
   } else {
-    sendResponse(false, 404, "File not found");
+    sendResponse(false, 500, "Failed to append");
   }
 }
+
 void handle_info(char *args, bool fromSerial) {
-  int idx = findFile(args, currentPath);
-  if (idx != -1) {
-    static JsonDocument data;
-    data.clear();
-    data["name"] = vfs[idx].name;
-    data["type"] = (vfs[idx].flags & FLAG_ISDIR) ? "dir" : "file";
-    data["size"] = strlen(vfs[idx].content);
-    data["mode"] = vfs[idx].mode;
+  String path = args;
+  if (!path.startsWith("/")) {
+    path = String(currentPath);
+    if (!path.endsWith("/")) path += "/";
+    path += args;
+  }
+  File f = LittleFS.open(path, "r");
+  if (f) {
+    JsonDocument data;
+    data["name"] = f.name();
+    data["type"] = f.isDirectory() ? "dir" : "file";
+    data["size"] = f.size();
+    f.close();
     sendResponse(true, 200, "OK", &data);
   } else {
     sendResponse(false, 404, "File not found");
   }
 }
-void handle_save(char *args, bool fromSerial) {
-  uint16_t magic = VFS_MAGIC;
-  EEPROM.put(EEPROM_VFS_ADDR, magic);
-  EEPROM.put(EEPROM_VFS_DATA_ADDR, vfs);
-  EEPROM.commit();
-  sendResponse(true, 200, "VFS saved to EEPROM");
-}
-void handle_load(char *args, bool fromSerial) {
-  uint16_t magic;
-  EEPROM.get(EEPROM_VFS_ADDR, magic);
-  if (magic == VFS_MAGIC) {
-    EEPROM.get(EEPROM_VFS_DATA_ADDR, vfs);
-    sendResponse(true, 200, "VFS loaded from EEPROM");
-  } else {
-    sendResponse(false, 404, "No saved VFS found");
-  }
-}
+
+void handle_save(char *args, bool fromSerial) { sendResponse(true, 200, "Files are autosaved via LittleFS"); }
+void handle_load(char *args, bool fromSerial) { sendResponse(true, 200, "Files are auto-loaded via LittleFS"); }
 void handle_lfs(char *args, bool fromSerial) {
-  if (strcmp(args, "help") == 0 || strlen(args) == 0) {
-    if (fromSerial) {
-      kprintln(F("LittleFS Utilities:"));
-      kprintln(F("  lfs ls      - List files in LittleFS"));
-      kprintln(F("  lfs cat <F> - Display file contents"));
-      kprintln(F("  lfs rm <F>  - Delete a file"));
-      kprintln(F("  lfs format  - Format LittleFS partition"));
-    } else {
-      sendResponse(false, 400, "Usage: lfs [ls|cat|rm|format]");
-    }
-    return;
-  }
-  if (strcmp(args, "format") == 0) {
-    LittleFS.format();
-    sendResponse(true, 200, "LittleFS formatted");
-  } else if (strncmp(args, "ls", 2) == 0) {
-#if defined(ESP8266)
-    Dir dir = LittleFS.openDir("/");
-    static JsonDocument data;
-    data.clear();
-    JsonArray arr = data.to<JsonArray>();
-    while (dir.next()) {
-      JsonObject obj = arr.add<JsonObject>();
-      obj["name"] = dir.fileName();
-      obj["size"] = dir.fileSize();
-    }
-    sendResponse(true, 200, "LittleFS Files", &data);
-#else
-    sendResponse(false, 501, "Not implemented for ESP32 yet");
-#endif
-  } else if (strncmp(args, "cat ", 4) == 0) {
-    char *filename = kTrim(args + 4);
-    String path = filename;
-    if (!path.startsWith("/")) path = "/" + path;
-    File f = LittleFS.open(path, "r");
-    if (!f) {
-      sendResponse(false, 404, "File not found in LittleFS");
-    } else {
-  
-      while (f.available()) {
-        kprint((char)f.read());
-      }
-      f.close(); 
-      kprintln();
-      if (!fromSerial) sendResponse(true, 200, "OK");
-    }
-  } else if (strncmp(args, "rm ", 3) == 0) {
-    char *filename = kTrim(args + 3);
-    String path = filename;
-    if (!path.startsWith("/")) path = "/" + path;
-    if (LittleFS.remove(path)) {
-      sendResponse(true, 200, "File removed from LittleFS");
-    } else {
-      sendResponse(false, 404, "File not found");
-    }
-  } else {
-    sendResponse(false, 400, "Usage: lfs [ls|cat|rm|format]");
-  }
+  sendResponse(true, 200, "LFS commands merged into standard ls/cat/rm/etc. Use format with lfs format");
+  if (strcmp(args, "format") == 0) { LittleFS.format(); sendResponse(true, 200, "Formatted"); }
 }
-void handle_chmod(char *args, bool fromSerial) {
-  char *sp = strchr(args, ' ');
-  if (!sp) {
-    sendResponse(false, 400, "Usage: chmod [mode] [file]");
-    return;
-  }
-  *sp = '\0';
-  int mode = strtol(args, NULL, 8);
-  char *filename = kTrim(sp + 1);
-  int idx = findFile(filename, currentPath);
-  if (idx != -1) {
-    vfs[idx].mode = mode;
-    sendResponse(true, 200, "Permissions updated");
-  } else {
-    sendResponse(false, 404, "File not found");
-  }
-}
-void handle_chown(char *args, bool fromSerial) {
-  char *sp = strchr(args, ' ');
-  if (!sp) {
-    sendResponse(false, 400, "Usage: chown [owner] [file]");
-    return;
-  }
-  *sp = '\0';
-  int owner = strcmp(args, "root") == 0 ? 0 : 1;
-  char *filename = kTrim(sp + 1);
-  int idx = findFile(filename, currentPath);
-  if (idx != -1) {
-    vfs[idx].ownerId = owner;
-    sendResponse(true, 200, "Owner updated");
-  } else {
-    sendResponse(false, 404, "File not found");
-  }
-}
+
+void handle_chmod(char *args, bool fromSerial) { sendResponse(true, 200, "Ignored: LittleFS does not support permissions"); }
+void handle_chown(char *args, bool fromSerial) { sendResponse(true, 200, "Ignored: LittleFS does not support ownership"); }
 void handle_cpu(char *args, bool fromSerial) {
   int freq = atoi(args);
   if (freq == 80 || freq == 160) {
@@ -1618,8 +1387,7 @@ void handle_trigger(char *args, bool fromSerial) {
     return;
   }
   if (strlen(args) == 0) {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     JsonArray arr = data.to<JsonArray>();
     for (int i = 0; i < MAX_TRIGS; i++) {
       if (triggerTable[i].active) {
@@ -1635,12 +1403,12 @@ void handle_trigger(char *args, bool fromSerial) {
   } else {
     char cond[32] = {0}, op[4] = {0}, act[64] = {0};  
     int val;
-    if (sscanf(args, "%31s %3s %d %63[^\n]", cond, op, &val, act) == 4) {  
-      op[3] = '\0'; 
+    if (sscanf(args, "%31s %2s %d %63[^\n]", cond, op, &val, act) == 4) {  
+      op[2] = '\0'; 
       for (int i = 0; i < MAX_TRIGS; i++) {
         if (!triggerTable[i].active) {
           strncpy(triggerTable[i].cond, cond, 31);
-          triggerTable[i].op = op[0];
+          strncpy(triggerTable[i].op, op, 3);
           triggerTable[i].val = val;
           strncpy(triggerTable[i].action, act, 63);
           triggerTable[i].active = true;
@@ -1682,14 +1450,39 @@ void handle_boot(char *args, bool fromSerial) {
   } else {
     EEPROM.get(EEPROM_BOOT_FILE_ADDR, buf);
     buf[NAME_LEN - 1] = '\0';
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     data["current"] = buf;
     sendResponse(true, 200, "Boot Configuration", &data);
   }
 }
 void handle_mqtt(char *args, bool fromSerial) {
-  sendResponse(true, 200, "MQTT Message Sent (Simulated)");
+  char *host_str = strtok(args, " ");
+  char *topic = strtok(NULL, " ");
+  char *payload = strtok(NULL, "");
+  if (!host_str || !topic || !payload) {
+    sendResponse(false, 400, "Usage: mqtt [host] [topic] [payload]");
+    return;
+  }
+  WiFiClient client;
+  if (client.connect(host_str, 1883)) {
+    uint8_t connectPkt[] = {0x10, 0x15, 0x00, 0x04, 'M','Q','T','T', 0x04, 0x02, 0x00, 0x3C, 0x00, 0x09, 'u','n','i','k','e','r','n','e','l'};
+    client.write(connectPkt, sizeof(connectPkt));
+    delay(10);
+    int tLen = strlen(topic);
+    int pLen = strlen(payload);
+    int remLen = 2 + tLen + pLen;
+    client.write(0x30);
+    client.write(remLen);
+    client.write(tLen >> 8);
+    client.write(tLen & 0xFF);
+    client.print(topic);
+    client.print(payload);
+    delay(10);
+    client.stop();
+    sendResponse(true, 200, "MQTT Message Published");
+  } else {
+    sendResponse(false, 502, "MQTT Broker unreachable");
+  }
 }
 void handle_pwm(char *args, bool fromSerial) {
   char *sp = strchr(args, ' ');
@@ -1817,8 +1610,7 @@ void handle_ping(char *args, bool fromSerial) {
       kprintln(F("ms"));
     }
   } else {
-    static JsonDocument data;
-    data.clear();
+    JsonDocument data;
     data["host"] = args;
     data["ip"] = ipStr;
     data["sent"] = 3;
@@ -1834,8 +1626,7 @@ void handle_wget(char *args, bool fromSerial) {
     int code = http.GET();
     if (code > 0) {
       String payload = http.getString();
-      static JsonDocument data;
-      data.clear();
+      JsonDocument data;
       data["size"] = payload.length();
       data["content"] = payload.substring(0, 64);
       sendResponse(true, 200, "Download OK", &data);
@@ -1939,10 +1730,92 @@ void handle_netstat(char *args, bool fromSerial) {
   sendResponse(true, 200, "Network Status Displayed");
 }
 void handle_cron(char *args, bool fromSerial) {
-  sendResponse(true, 200, "Cron Table Empty");
+  if (strcmp(args, "help") == 0) {
+    if (fromSerial) {
+      kprintln(F("Cron Commands:"));
+      kprintln(F("  cron                   - List active cron jobs"));
+      kprintln(F("  cron <h> <m> <cmd>     - Add new cron job"));
+      kprintln(F("  cron rm <id>           - Remove cron job"));
+    } else {
+      sendResponse(false, 400, "Usage: cron [h] [m] [cmd]");
+    }
+    return;
+  }
+  if (strlen(args) == 0) {
+    bool empty = true;
+    for (int i = 0; i < MAX_CRON; i++) {
+      if (cronTable[i].active) {
+        if (empty && fromSerial) {
+          kprintln(F("ID   TIME    CMD"));
+          kprintln(F("-------------------"));
+        }
+        empty = false;
+        if (fromSerial) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), "%-4d %02d:%02d   %s", i, cronTable[i].h, cronTable[i].m, cronTable[i].cmd);
+          kprintln(buf);
+        }
+      }
+    }
+    if (empty) {
+      sendResponse(true, 200, "Cron Table Empty");
+    } else if (!fromSerial) {
+      sendResponse(true, 200, "Cron jobs listed in Serial");
+    }
+  } else if (strncmp(args, "rm ", 3) == 0) {
+    int id = atoi(args + 3);
+    if (id >= 0 && id < MAX_CRON) {
+      cronTable[id].active = false;
+      sendResponse(true, 200, "Cron job removed");
+    } else {
+      sendResponse(false, 400, "Invalid ID");
+    }
+  } else {
+    int h, m;
+    char cmd[32];
+    if (sscanf(args, "%d %d %31[^\n]", &h, &m, cmd) == 3) {
+      for (int i = 0; i < MAX_CRON; i++) {
+        if (!cronTable[i].active) {
+          cronTable[i].h = h;
+          cronTable[i].m = m;
+          strncpy(cronTable[i].cmd, cmd, 31);
+          cronTable[i].active = true;
+          sendResponse(true, 200, "Cron job added");
+          return;
+        }
+      }
+      sendResponse(false, 507, "Cron table full");
+    } else {
+      sendResponse(false, 400, "Usage: cron [h] [m] [cmd]");
+    }
+  }
 }
 void handle_bg(char *args, bool fromSerial) {
-  sendResponse(true, 200, "Task moved to background");
+  char *sp = strchr(args, ' ');
+  if (!sp) {
+    sendResponse(false, 400, "Usage: bg [interval_ms] [cmd]");
+    return;
+  }
+  *sp = '\0';
+  int interval = atoi_safe(args);
+  char *cmd = kTrim(sp + 1);
+
+  for (int i = 0; i < MAX_TASKS; i++) {
+    if (!taskTable[i].active) {
+      taskTable[i].func = nullptr;
+      strncpy(taskTable[i].cmd, cmd, 31);
+      taskTable[i].cmd[31] = '\0';
+      taskTable[i].interval = interval;
+      taskTable[i].lastRun = millis();
+      taskTable[i].executionCount = 0;
+      strncpy(taskTable[i].name, cmd, NAME_LEN - 1);
+      taskTable[i].name[NAME_LEN - 1] = '\0';
+      taskTable[i].active = true;
+      sendResponse(true, 200, "Task moved to background");
+      return;
+    }
+  }
+  sendResponse(false, 507, "Task table full");
 }
 void handle_recovery(char *args, bool fromSerial) {
   if (!fromSerial) {
@@ -1965,19 +1838,13 @@ void handle_recovery(char *args, bool fromSerial) {
     sendResponse(true, 200, "Factory Reset: Password cleared. Please setup.");
     addDmesg(F("Recovery: Factory Reset triggered"));
   } else if (strcmp(args, "purge") == 0) {
-    for (int i = 0; i < MAX_FILES; i++) {
-      if (vfs[i].flags & FLAG_ACTIVE) {
-        if (!(vfs[i].flags & FLAG_ISDIR)) {
-            vfs[i].flags &= ~FLAG_ACTIVE;
-        }
-      }
-    }
-    sendResponse(true, 200, "VFS Purged (Files deleted, Dirs kept)");
-    addDmesg(F("Recovery: VFS Purged"));
+    LittleFS.format();
+    sendResponse(true, 200, "LittleFS Formatted (All files deleted)");
+    addDmesg(F("Recovery: LittleFS Purged"));
   } else {
     kprintln(F("Recovery Commands:"));
     kprintln(F("  recovery unlock  - Reset login failures"));
     kprintln(F("  recovery reset   - Clear password (Factory Reset)"));
-    kprintln(F("  recovery purge   - Delete all files in VFS"));
+    kprintln(F("  recovery purge   - Format LittleFS and delete all files"));
   }
 }

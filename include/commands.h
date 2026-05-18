@@ -29,10 +29,7 @@ void handle_touch(char *args, bool fromSerial);
 void handle_rm(char *args, bool fromSerial);
 void handle_mv(char *args, bool fromSerial);
 void handle_cp(char *args, bool fromSerial);
-void handle_pinmode(char *args, bool fromSerial);
-void handle_write(char *args, bool fromSerial);
-void handle_read(char *args, bool fromSerial);
-void handle_neofetch(char *args, bool fromSerial);
+
 void handle_reboot(char *args, bool fromSerial);
 void handle_i2c(char *args, bool fromSerial);
 void handle_date(char *args, bool fromSerial);
@@ -85,7 +82,7 @@ void handle_bt(char *args, bool fromSerial);
 void handle_netstat(char *args, bool fromSerial);
 void handle_cron(char *args, bool fromSerial);
 void handle_bg(char *args, bool fromSerial);
-void handle_chat(char *args, bool fromSerial);
+
 void handle_waitwifi(char *args, bool fromSerial);
 void handle_recovery(char *args, bool fromSerial);
 

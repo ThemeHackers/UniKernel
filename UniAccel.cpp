@@ -1,9 +1,9 @@
 #include "UniAccel.h"
 #include "include/common.h"
 #include "include/commands.h"
-#include "include/vfs.h"
 #include "include/shell.h"
 #include <ESP8266mDNS.h>
+#include <LittleFS.h>
 
 extern void kprint(const char *s);
 extern void kprint(const __FlashStringHelper *s);
@@ -168,16 +168,7 @@ ICACHE_FLASH_ATTR void loopUniAccel() {
   if (!accelStopRequested) {
     webSocket.loop();
     if (accelConnected && ESP.getFreeHeap() < 5000) {
-        for (int i = 0; i < MAX_FILES; i++) {
-            if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR) && strlen(vfs[i].content) > 32) {
-                char swapCmd[128];
-                snprintf(swapCmd, sizeof(swapCmd), "swap %s %s", vfs[i].name, vfs[i].content);
-                handleAccelCommand(swapCmd);
-                vfs[i].flags &= ~FLAG_ACTIVE;
-                addDmesg(F("V-HEAP: Swapped file to Host to free RAM"));
-                break;
-            }
-        }
+        /* VFS loop removed */
     }
     static unsigned long lastHb = 0;
   
@@ -187,7 +178,7 @@ ICACHE_FLASH_ATTR void loopUniAccel() {
             return; 
         }
         int freeR = ESP.getFreeHeap();
-        static JsonDocument hdoc; hdoc.clear();
+        JsonDocument hdoc;
         hdoc["cmd"] = "heartbeat"; hdoc["heap"] = freeR;
         if (freeR < 2000) hdoc["alert"] = "LOW_RAM_OVERLOAD";
         uint8_t hbuf[128]; size_t hlen = serializeMsgPack(hdoc, hbuf, sizeof(hbuf));
@@ -204,8 +195,7 @@ ICACHE_FLASH_ATTR void loopUniAccel() {
           accelConnected = false;
           return; 
       }
-      static JsonDocument doc;
-      doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "gpu_physics";
       doc["kernel"] = "render_3d";
       uint8_t buffer[256];
@@ -248,16 +238,19 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   char *sub = argv[0];
   char *subArgs = (argc > 1) ? argv[1] : NULL;
   if (strcmp_P(sub, PSTR("nodes")) == 0) {
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_list";
+      JsonDocument doc; doc["cmd"] = "cluster_list";
       uint8_t buffer[64]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
       secure_crypt(buffer, len); webSocket.sendBIN(buffer, len);
       kprintln(F("Scanning Cluster Nodes...")); return;
   }
   if (strcmp_P(sub, PSTR("sync")) == 0 && subArgs) {
-      int fIdx = findFile(subArgs, currentPath);
-      if (fIdx == -1) { kprintln(F("File not found locally")); return; }
-      static JsonDocument doc; doc.clear();
-      doc["cmd"] = "cluster_sync"; doc["path"] = subArgs; doc["data"] = vfs[fIdx].content;
+      if (!LittleFS.exists(subArgs)) { kprintln(F("File not found locally")); return; }
+      File f = LittleFS.open(subArgs, "r");
+      if (!f) { kprintln(F("Failed to open file")); return; }
+      String fileData = f.readString();
+      f.close();
+      JsonDocument doc;
+      doc["cmd"] = "cluster_sync"; doc["path"] = subArgs; doc["data"] = fileData.c_str();
       static uint8_t sync_buffer[2048]; size_t len = serializeMsgPack(doc, sync_buffer, sizeof(sync_buffer));
       secure_crypt(sync_buffer, len); webSocket.sendBIN(sync_buffer, len);
       kprint(F("Syncing file to cluster: ")); kprintln(subArgs); return;
@@ -274,7 +267,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
           remaining -= arg_len;
           if (i < argc - 1 && remaining > 1) { strncat(e_cmd, " ", remaining--); }
       }
-      static JsonDocument doc; doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = e_cmd;
       static uint8_t rexec_buffer[256]; size_t len = serializeMsgPack(doc, rexec_buffer, sizeof(rexec_buffer));
       if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
@@ -287,14 +280,14 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
   }
   if (strcmp_P(sub, PSTR("kvset")) == 0) {
       if (argc < 3) { kprintln(F("Usage: accel kvset <k> <v>")); return; }
-      static JsonDocument doc; doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "cluster_kv_set"; doc["key"] = argv[1]; doc["val"] = argv[2];
       static uint8_t kv_buffer[512]; size_t len = serializeMsgPack(doc, kv_buffer, sizeof(kv_buffer));
       secure_crypt(kv_buffer, len); webSocket.sendBIN(kv_buffer, len);
       kprint(F("Setting Global KV: ")); kprintln(argv[1]); return;
   }
   if (strcmp_P(sub, PSTR("kvget")) == 0 && argc > 1) {
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_kv_get"; doc["key"] = argv[1];
+      JsonDocument doc; doc["cmd"] = "cluster_kv_get"; doc["key"] = argv[1];
       static uint8_t kvget_buffer[128]; size_t len = serializeMsgPack(doc, kvget_buffer, sizeof(kvget_buffer));
       secure_crypt(kvget_buffer, len); webSocket.sendBIN(kvget_buffer, len); return;
   }
@@ -304,7 +297,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       for (int i = 0; i < MAX_TASKS; i++) {
           if (taskTable[i].active && strcmp(taskTable[i].name, taskName) == 0) {
               char rexecCmd[128]; snprintf(rexecCmd, sizeof(rexecCmd), "bg %s", taskName);
-              static JsonDocument doc; doc.clear();
+              JsonDocument doc;
               doc["cmd"] = "cluster_exec"; doc["target"] = target; doc["exec"] = rexecCmd;
               static uint8_t mig_buffer[256]; size_t len = serializeMsgPack(doc, mig_buffer, sizeof(mig_buffer));
               secure_crypt(mig_buffer, len); webSocket.sendBIN(mig_buffer, len);
@@ -313,7 +306,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       } return;
   }
   if (strcmp_P(sub, PSTR("mount")) == 0 && argc > 1) {
-      static JsonDocument doc; doc.clear();
+      JsonDocument doc;
       if (argc > 2 && strcmp(argv[1], "ls") == 0) {
           doc["cmd"] = "fs_ls"; doc["path"] = argv[2];
       } else {
@@ -323,7 +316,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       secure_crypt(mount_buffer, len); webSocket.sendBIN(mount_buffer, len); return;
   }
   if (strcmp_P(sub, PSTR("swap")) == 0 && argc > 2) {
-      static JsonDocument doc; doc.clear();
+      JsonDocument doc;
       if (strcmp(argv[1], "out") == 0 && argc > 3) {
           doc["cmd"] = "swap_out"; doc["key"] = argv[2]; doc["data"] = argv[3];
       } else {
@@ -342,14 +335,14 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
           remaining -= arg_len;
           if (i < argc - 1 && remaining > 1) { strncat(msg, " ", remaining--); }
       }
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "broadcast"; doc["data"] = msg;
+      JsonDocument doc; doc["cmd"] = "broadcast"; doc["data"] = msg;
       static uint8_t bcast_buffer[512]; size_t len = serializeMsgPack(doc, bcast_buffer, sizeof(bcast_buffer));
       if (len == 0) { kprintln(F("Error: Serialization failed")); return; }
       secure_crypt(bcast_buffer, len); webSocket.sendBIN(bcast_buffer, len);
       kprintln(F("Broadcast request sent...")); return;
   }
   if (strcmp_P(sub, PSTR("status")) == 0 || strcmp_P(sub, PSTR("health")) == 0 || strcmp_P(sub, PSTR("top")) == 0) {
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "cluster_top";
+      JsonDocument doc; doc["cmd"] = "cluster_top";
       static uint8_t top_buffer[64]; size_t len = serializeMsgPack(doc, top_buffer, sizeof(top_buffer));
       secure_crypt(top_buffer, len); webSocket.sendBIN(top_buffer, len); return;
   }
@@ -357,12 +350,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       discoverAccelHost(); return;
   }
   if (strcmp_P(sub, PSTR("bench")) == 0) {
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "gpu_bench";
+      JsonDocument doc; doc["cmd"] = "gpu_bench";
       static uint8_t bench_buffer[64]; size_t len = serializeMsgPack(doc, bench_buffer, sizeof(bench_buffer));
       secure_crypt(bench_buffer, len); webSocket.sendBIN(bench_buffer, len); return;
   }
   if (strcmp_P(sub, PSTR("physics")) == 0) {
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "gpu_physics";
+      JsonDocument doc; doc["cmd"] = "gpu_physics";
       static uint8_t phys_buffer[64]; size_t len = serializeMsgPack(doc, phys_buffer, sizeof(phys_buffer));
       secure_crypt(phys_buffer, len); webSocket.sendBIN(phys_buffer, len); return;
   }
@@ -378,7 +371,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("║     Starting CUDA Build Process       ║"));
       kprintln(F("╚════════════════════════════════════════╝"));
       kprintColor(CLR_RST);
-      static JsonDocument doc; doc.clear(); doc["cmd"] = "build_cu";
+      JsonDocument doc; doc["cmd"] = "build_cu";
       doc["verbose"] = true;
       static uint8_t build_buffer[128]; size_t len = serializeMsgPack(doc, build_buffer, sizeof(build_buffer));
       secure_crypt(build_buffer, len); webSocket.sendBIN(build_buffer, len);
@@ -393,8 +386,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Error: No model loaded. Use 'accel load <model>' first."));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "chat_start";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -459,23 +451,21 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     char filename[64] = {0};  
     if (sscanf(subArgs, "%63s", filename) == 1) {  
       filename[63] = '\0';
-      int fIdx = -1;
-      for (int j = 0; j < MAX_FILES; j++) {
-        if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, filename) == 0 &&
-            strcmp(vfs[j].parentDir, currentPath) == 0) {
-          fIdx = j;
-          break;
-        }
-      }
-      if (fIdx == -1) {
+      String fullPath = String(currentPath);
+      if (!fullPath.endsWith("/")) fullPath += "/";
+      fullPath += filename;
+      if (!LittleFS.exists(fullPath)) {
         kprintln(F("File not found."));
         return;
       }
-      static JsonDocument doc;
-      doc.clear();
+      File f = LittleFS.open(fullPath, "r");
+      if (!f) { kprintln(F("Failed to open file")); return; }
+      String fileData = f.readString();
+      f.close();
+      JsonDocument doc;
       doc["cmd"] = "gpu_inject";
-      doc["code"] = vfs[fIdx].content;
-      uint8_t buffer[CONTENT_LEN + 128];
+      doc["code"] = fileData.c_str();
+      uint8_t buffer[2048];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
       secure_crypt(buffer, len);
       webSocket.sendBIN(buffer, len);
@@ -493,8 +483,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     char textBuf[64] = "";
     int keyVal = 0x5A;
     sscanf(subArgs, "%63s %x", textBuf, &keyVal);
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_encrypt";
     doc["text"] = textBuf;
     doc["key"] = (uint8_t)keyVal;
@@ -534,8 +523,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
               F("Usage: accel research crack [target_hash] [start] [range]"));
           return;
         }
-        static JsonDocument doc;
-        doc.clear();
+        JsonDocument doc;
         doc["cmd"] = "gpu_exec";
         doc["kernel"] = "hash_crack";
         JsonArray data = doc["data"].to<JsonArray>();
@@ -554,8 +542,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
         kprintln(F("Usage: accel research prime [start] [range]"));
         return;
       }
-      static JsonDocument doc;
-      doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "prime_search";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -573,8 +560,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
         kprintln(F("Usage: accel research match [text] [pattern]"));
         return;
       }
-      static JsonDocument doc;
-      doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "pattern_match";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -592,8 +578,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Security Research: Pattern match offloaded..."));
     } else if (strcmp(rType, "rsa") == 0) {
       kprintln(F("RSA 2048-bit High-Throughput Acceleration..."));
-      static JsonDocument doc;
-      doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "gpu_exec";
       doc["kernel"] = "rsa_2048";
       JsonArray data = doc["data"].to<JsonArray>();
@@ -626,8 +611,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     kprintln(F("GPU Benchmark"));
     kprintColor(CLR_RST);
     kprintln(F("Performing Memory & Compute Stress Analysis..."));
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_bench";
     uint8_t buf[128];
     size_t len = serializeMsgPack(doc, buf, sizeof(buf));
@@ -684,8 +668,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_list";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -697,8 +680,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_unload";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -714,8 +696,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel load [model_id/preset]"));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "load_hf";
     doc["model_id"] = subArgs;
     uint8_t buffer[256];
@@ -733,8 +714,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Usage: accel ask [prompt]"));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "ask";
     doc["prompt"] = subArgs;
     uint8_t buffer[512];
@@ -759,8 +739,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       return;
     }
     accelAnimating = true;
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_physics";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -773,8 +752,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
       kprintln(F("Not connected."));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "gpu_signal";
     JsonArray data = doc["data"].to<JsonArray>();
     for (int i = 0; i < 64; i++) {
@@ -790,7 +768,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     if (!accelConnected || !subArgs) return;
     char* key = strtok(subArgs, " ");
     char* val = strtok(NULL, "");
-    static JsonDocument doc; doc.clear();
+    JsonDocument doc;
     if (val) {
         doc["cmd"] = "swap_out"; doc["key"] = key; doc["data"] = val;
         kprint(F("Swapping out: ")); kprintln(key);
@@ -805,7 +783,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     if (!accelConnected || !subArgs) return;
     char* mode = strtok(subArgs, " ");
     char* path = strtok(NULL, "");
-    static JsonDocument doc; doc.clear();
+    JsonDocument doc;
     if (path && strcmp(mode, "ls") == 0) {
         doc["cmd"] = "fs_ls"; doc["path"] = path;
         kprint(F("Remote LS: ")); kprintln(path);
@@ -830,7 +808,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
             if (end) *end = '\0';
         }
     }
-    static JsonDocument doc; doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "edge_pipe"; doc["model"] = model; doc["data"] = data ? data : "";
     if (callback) doc["on_match"] = callback;
     uint8_t buffer[1024]; size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -844,7 +822,7 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
     }
     char* c_sub = strtok(subArgs, " ");
     char* c_args = strtok(NULL, "");
-    static JsonDocument doc; doc.clear();
+    JsonDocument doc;
     if (strcmp(c_sub, "list") == 0) {
         doc["cmd"] = "cluster_list";
     } else if (strcmp(c_sub, "broadcast") == 0) {
@@ -868,9 +846,12 @@ ICACHE_FLASH_ATTR void handleAccelCommand(char *args) {
         doc["cmd"] = "cluster_top";
     } else if (strcmp(c_sub, "sync") == 0) {
         if (!c_args) { kprintln(F("Usage: sync <file>")); return; }
-        int fIdx = findFile(c_args, currentPath);
-        if (fIdx == -1) { kprintln(F("File not found locally")); return; }
-        doc["cmd"] = "cluster_sync"; doc["path"] = c_args; doc["data"] = vfs[fIdx].content;
+        if (!LittleFS.exists(c_args)) { kprintln(F("File not found locally")); return; }
+        File f = LittleFS.open(c_args, "r");
+        if (!f) { kprintln(F("Failed to open file")); return; }
+        String fileData = f.readString();
+        f.close();
+        doc["cmd"] = "cluster_sync"; doc["path"] = c_args; doc["data"] = fileData.c_str();
     } else if (strcmp(c_sub, "proxy") == 0) {
         if (!c_args) { kprintln(F("Usage: proxy <ip>")); return; }
         kprint(F("Entering Proxy Shell for ")); kprintln(c_args);
@@ -934,8 +915,7 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
     return;
   }
   secure_crypt(payload, length);
-  static JsonDocument res;
-  res.clear();
+  JsonDocument res;
   DeserializationError error = deserializeMsgPack(res, payload, length);
   if (error) {
     error = deserializeJson(res, payload, length);
@@ -1161,27 +1141,14 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
               const char* path = res["path"].as<const char*>();
               const char* data = res["data"].as<const char*>();
               if (!path || !data) { kprintln(F("[CLUSTER-SYNC:ERR] Malformed packet")); return; }
-              int fIdx = findFile(path, "/");
-              if (fIdx != -1) {
-                  strncpy(vfs[fIdx].content, data, sizeof(vfs[fIdx].content)-1);
-                  kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:UPDATE] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
+              
+              File f = LittleFS.open(path, "w");
+              if (f) {
+                  f.print(data);
+                  f.close();
+                  kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:UPDATED] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
               } else {
-                  int newIdx = -1;
-                  for (int i = 0; i < MAX_FILES; i++) {
-                      if (!(vfs[i].flags & FLAG_ACTIVE)) {
-                          newIdx = i;
-                          break;
-                      }
-                  }
-                  if (newIdx != -1) {
-                      vfs[newIdx].flags |= FLAG_ACTIVE;
-                      strncpy(vfs[newIdx].name, path, sizeof(vfs[newIdx].name)-1);
-                      strncpy(vfs[newIdx].parentDir, "/", sizeof(vfs[newIdx].parentDir)-1);
-                      strncpy(vfs[newIdx].content, data, sizeof(vfs[newIdx].content)-1);
-                      kprintColor_P(CLR_GRN); kprint(F("[CLUSTER-SYNC:NEW] ")); kprintColor_P(CLR_WHT); kprintln(path); kprintColor_P(CLR_RST);
-                  } else {
-                      kprintln(F("[CLUSTER-SYNC:ERR] No VFS slots available"));
-                  }
+                  kprintln(F("[CLUSTER-SYNC:ERR] Failed to write file"));
               }
             }
         } else if (strcmp(cmd, "proxy_in") == 0) {
@@ -1208,19 +1175,22 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
               const char* path = res["path"].as<const char*>();
               const char* action = res["action"].as<const char*>();
               if (!from || !path || !action) return;
-              static JsonDocument rdoc; rdoc.clear();
+              JsonDocument rdoc;
               rdoc["cmd"] = "node_fs_res"; rdoc["target"] = from; rdoc["path"] = path;
               if (strcmp(action, "list") == 0) {
                   JsonArray files = rdoc["files"].to<JsonArray>();
-                  for (int i = 0; i < 16; i++) {
-                      if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].parentDir, path) == 0) {
-                          files.add(vfs[i].name);
-                      }
+                  Dir dir = LittleFS.openDir(path);
+                  while (dir.next()) {
+                      files.add(dir.fileName());
                   }
               } else if (strcmp(action, "read") == 0) {
-                  int fIdx = findFile(path + (path[0] == '/' ? 1 : 0), "/");
-                  if (fIdx != -1) rdoc["data"] = vfs[fIdx].content;
-                  else rdoc["data"] = "File not found";
+                  File f = LittleFS.open(path, "r");
+                  if (f) {
+                      rdoc["data"] = f.readString();
+                      f.close();
+                  } else {
+                      rdoc["data"] = "File not found";
+                  }
               }
               uint8_t rbuf[1024]; size_t rlen = serializeMsgPack(rdoc, rbuf, sizeof(rbuf));
               secure_crypt(rbuf, rlen);
@@ -1490,7 +1460,7 @@ ICACHE_FLASH_ATTR void onGpuResponse(uint8_t *payload, size_t length) {
         if (output.indexOf("Current Model:") >= 0) accelModelLoaded = true;
       }
     }
-    } 
+    }
     if (res.containsKey("compute_ms") && !accelChatMode && !accelAnimating) {
       unsigned long rtt = ((long)(millis() - lastRequestStartTime));
       kprint(F("Compute: "));
@@ -1552,8 +1522,7 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
     kprintln(F("Connected to GPU Host Successfully"));
     kprintColor_P(CLR_RST);
     {
-      static JsonDocument doc;
-      doc.clear();
+      JsonDocument doc;
       doc["cmd"] = "gpu_list";
       uint8_t buffer[64];
       size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -1576,8 +1545,7 @@ ICACHE_FLASH_ATTR void webSocketEvent(WStype_t type, uint8_t *payload, size_t le
 ICACHE_FLASH_ATTR void accelExec(const char *kernel, JsonArray data) {
   if (!accelConnected)
     return;
-  static JsonDocument doc;
-  doc.clear();
+  JsonDocument doc;
   doc["cmd"] = "gpu_exec";
   doc["kernel"] = kernel;
   doc["data"] = data;
@@ -1611,8 +1579,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
       kprintln(F("Usage: hf token <token>"));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "hf_token";
     doc["token"] = subArgs;
     uint8_t buffer[256];
@@ -1622,8 +1589,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     webSocket.sendBIN(buffer, len);
     kprintln(F("Sending token to GPU Host..."));
   } else if (strcmp(sub, "status") == 0) {
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "hf_status";
     uint8_t buffer[64];
     size_t len = serializeMsgPack(doc, buffer, sizeof(buffer));
@@ -1631,8 +1597,7 @@ ICACHE_FLASH_ATTR void handleHfCommand(char *args) {
     secure_crypt(buffer, len);
     webSocket.sendBIN(buffer, len);
   } else if (strcmp(sub, "offline") == 0) {
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     doc["cmd"] = "hf_offline";
     doc["value"] = true;
     uint8_t buffer[64];

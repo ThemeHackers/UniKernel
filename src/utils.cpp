@@ -142,8 +142,7 @@ ICACHE_FLASH_ATTR void sendResponse(bool ok, int code, const char *message, Json
     }
 
     if (!isSerialSession) {
-        static JsonDocument doc;
-        doc.clear();
+        JsonDocument doc;
         doc["ok"] = ok;
         doc["code"] = code;
         doc["msg"] = message;

@@ -23,7 +23,6 @@ ADC_MODE(ADC_VCC);
 #include "include/commands.h"
 #include "include/common.h"
 #include "include/shell.h"
-#include "include/vfs.h"
 #define PRODUCTION_BUILD
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
 ICACHE_FLASH_ATTR void kprintln(IPAddress ip);
@@ -91,6 +90,7 @@ CronEntry cronTable[MAX_CRON];
 Trigger triggerTable[MAX_TRIGS];
 char inputBuffer[MAX_INPUT_LEN] = "";
 int inputLen = 0;
+char currentPath[PATH_LEN] = "/";
 DmesgEntry dmesg[DMESG_LINES];
 int dmesgIndex = 0;
 int shellDepth = 0;
@@ -102,7 +102,8 @@ bool otaEnabled = false;
 unsigned long otaEndTime = 0;
 #define OTA_WINDOW 300000
 int redirectionFileIdx = -1;
-#define MAX_HISTORY 4
+char redirectionBuffer[256] = "";
+#define MAX_HISTORY 2
 char cmdHistory[MAX_HISTORY][MAX_INPUT_LEN];
 int historyWriteIdx = 0;
 int historyViewIdx = -1;
@@ -353,8 +354,8 @@ setInterval(update, 3000); update();
 )rawhtml";
 ICACHE_FLASH_ATTR void kprint(const __FlashStringHelper *s) {
   if (redirectionFileIdx != -1) {
-    strncat_P(vfs[redirectionFileIdx].content, (PGM_P)s,
-              CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    strncat_P(redirectionBuffer, (PGM_P)s,
+              sizeof(redirectionBuffer) - strlen(redirectionBuffer) - 1);
     return;
   }
   Serial.print(s);
@@ -371,10 +372,10 @@ void kprint(char c) {
   if (c == '\0')
     return;
   if (redirectionFileIdx != -1) {
-    size_t len = strlen(vfs[redirectionFileIdx].content);
-    if (len < CONTENT_LEN - 1) {
-      vfs[redirectionFileIdx].content[len] = c;
-      vfs[redirectionFileIdx].content[len + 1] = '\0';
+    size_t len = strlen(redirectionBuffer);
+    if (len < sizeof(redirectionBuffer) - 1) {
+      redirectionBuffer[len] = c;
+      redirectionBuffer[len + 1] = '\0';
     }
     return;
   }
@@ -386,8 +387,8 @@ void kprint(char c) {
 }
 ICACHE_FLASH_ATTR void kprint(const char *s) {
   if (redirectionFileIdx != -1) {
-    strncat(vfs[redirectionFileIdx].content, s,
-            CONTENT_LEN - strlen(vfs[redirectionFileIdx].content) - 1);
+    strncat(redirectionBuffer, s,
+            sizeof(redirectionBuffer) - strlen(redirectionBuffer) - 1);
     return;
   }
   Serial.print(s);
@@ -560,19 +561,12 @@ ICACHE_FLASH_ATTR void addDmesgRam(const char *msg) {
   dmesgIndex++;
 }
 void logError(const char *msg) {
-  int found = -1;
-  for (int j = 0; j < MAX_FILES; j++) {
-    if ((vfs[j].flags & FLAG_ACTIVE) && strcmp(vfs[j].name, "error.log") == 0 &&
-        strcmp(vfs[j].parentDir, "/sys") == 0) {
-      found = j;
-      break;
-    }
-  }
-  if (found != -1) {
-    char entry[CONTENT_LEN];
-    snprintf(entry, sizeof(entry), "[%lu] %s\n", millis() / 1000, msg);
-    size_t currentLen = strlen(vfs[found].content);
-    strncat(vfs[found].content, entry, CONTENT_LEN - currentLen - 1);
+  char entry[256];
+  snprintf(entry, sizeof(entry), "[%lu] %s\n", millis() / 1000, msg);
+  File f = LittleFS.open("/sys/error.log", "a");
+  if (f) { 
+    f.print(entry); 
+    f.close(); 
   }
 }
 ICACHE_FLASH_ATTR void printPrompt(bool fromSerial) {
@@ -623,12 +617,7 @@ ICACHE_FLASH_ATTR void emergencyMemoryCleanup() {
   historyWriteIdx = 0;
   memset(inputBuffer, 0, sizeof(inputBuffer));
   inputLen = 0;
-  for (int i = 0; i < MAX_FILES; i++) {
-    if ((vfs[i].flags & FLAG_ACTIVE) && !(vfs[i].flags & FLAG_ISDIR) &&
-        strcmp(vfs[i].name, "error.log") != 0) {
-      vfs[i].content[0] = '\0';
-    }
-  }
+
   yield();
   delay(100);
 }
@@ -638,8 +627,8 @@ ICACHE_FLASH_ATTR void optimizeMemoryUsage() {
     webServer.stop();
     addDmesg(F("Optimized: Web service paused"));
   }
-  if (historyCount > 2) {
-    historyCount = 2;
+  if (historyCount > (MAX_HISTORY > 0 ? MAX_HISTORY : 1)) {
+    historyCount = MAX_HISTORY;
     addDmesg(F("Optimized: Command history reduced"));
   }
   if (inputLen > 0) {
@@ -662,8 +651,8 @@ ICACHE_FLASH_ATTR void preventiveMemoryCleanup() {
     historyWriteIdx = 0;
     addDmesg(F("Memory: Swap Complete"));
   }
-  if (historyCount > 4)
-    historyCount = 4;
+  if (historyCount > MAX_HISTORY)
+    historyCount = MAX_HISTORY;
   yield();
 }
 ICACHE_FLASH_ATTR void logResetReason() {
@@ -690,30 +679,10 @@ ICACHE_FLASH_ATTR void logResetReason() {
       f.println("mV");
       f.close();
     }
-  }
-  int idx = findFile("crash.log", "/sys");
-  if (idx == -1) {
-    for (int i = 0; i < MAX_FILES; i++) {
-      if (!(vfs[i].flags & FLAG_ACTIVE)) {
-        idx = i;
-        strcpy(vfs[idx].name, "crash.log");
-        strcpy(vfs[idx].parentDir, "/sys");
-        vfs[idx].flags = FLAG_ACTIVE;
-        vfs[idx].mode = 0444;
-        vfs[idx].ownerId = 0;
-        break;
-      }
-    }
-  }
-  if (idx != -1) {
+  }  if (LittleFS.exists("/crash.log")) {
     File f = LittleFS.open("/crash.log", "r");
     if (f) {
-      size_t s = f.size();
-      if (s > CONTENT_LEN - 1) {
-        f.seek(s - (CONTENT_LEN - 1));
-      }
-      f.read((uint8_t *)vfs[idx].content, CONTENT_LEN - 1);
-      vfs[idx].content[f.available()] = '\0';
+      addDmesg(F("LittleFS: Found crash.log"));
       f.close();
     }
   }
@@ -774,25 +743,22 @@ ICACHE_FLASH_ATTR void setup() {
   fastDigitalWrite(LED_BUILTIN, LOW);
   delay(100);
   fastDigitalWrite(LED_BUILTIN, HIGH);
-  initFS();
+  if (!LittleFS.begin()) {
+    Serial.println(F("[FS] LittleFS Mount Failed. Formatting..."));
+    if (LittleFS.format()) {
+      Serial.println(F("[FS] LittleFS Formatted Successfully."));
+      if (!LittleFS.begin()) {
+        Serial.println(F("[FS] LittleFS Mount Failed after format."));
+      }
+    } else {
+      Serial.println(F("[FS] LittleFS Format Failed."));
+    }
+  }
+  
   initShell();
 #if defined(ESP8266) || defined(ESP32)
   EEPROM.begin(4096);
 #endif
-  uint16_t magic;
-  int addr = EEPROM_VFS_ADDR;
-  EEPROM.get(addr, magic);
-  if (magic == VFS_MAGIC) {
-    EEPROM.get(EEPROM_VFS_DATA_ADDR, vfs);
-    addDmesg(F("Filesystem restored from EEPROM"));
-    bool hasSys = false;
-    for (int i = 0; i < MAX_FILES; i++) {
-      if ((vfs[i].flags & FLAG_ACTIVE) && strcmp(vfs[i].name, "sys") == 0)
-        hasSys = true;
-    }
-    if (!hasSys)
-      initFS();
-  }
   Wire.begin();
 #if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266) || defined(ESP32)
   WiFi.mode(WIFI_STA);
@@ -915,8 +881,7 @@ ICACHE_FLASH_ATTR void setupWebServer() {
                      _OSTR("{\"error\":\"Bad Request\"}"));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     String payload = webServer.arg("plain");
     DeserializationError error = deserializeJson(doc, payload);
     if (error) {
@@ -997,8 +962,7 @@ ICACHE_FLASH_ATTR void setupWebServer() {
       webServer.send(400, "application/json", _OSTR("{\"error\":\"No body\"}"));
       return;
     }
-    static JsonDocument doc;
-    doc.clear();
+    JsonDocument doc;
     String payload = webServer.arg("plain");
     deserializeJson(doc, payload);
     const char *cmd = doc["cmd"];
@@ -1048,9 +1012,17 @@ ICACHE_FLASH_ATTR void processTriggers() {
     else if (strcmp(triggerTable[i].cond, "ram") == 0)
       current = freeMemory();
     bool fire = false;
-    if (triggerTable[i].op == '<' && current < triggerTable[i].val)
+    if (strcmp(triggerTable[i].op, "<") == 0 && current < triggerTable[i].val)
       fire = true;
-    if (triggerTable[i].op == '>' && current > triggerTable[i].val)
+    else if (strcmp(triggerTable[i].op, "<=") == 0 && current <= triggerTable[i].val)
+      fire = true;
+    else if (strcmp(triggerTable[i].op, ">") == 0 && current > triggerTable[i].val)
+      fire = true;
+    else if (strcmp(triggerTable[i].op, ">=") == 0 && current >= triggerTable[i].val)
+      fire = true;
+    else if (strcmp(triggerTable[i].op, "==") == 0 && current == triggerTable[i].val)
+      fire = true;
+    else if (strcmp(triggerTable[i].op, "!=") == 0 && current != triggerTable[i].val)
       fire = true;
     if (fire) {
       char buf[MAX_INPUT_LEN];
@@ -1152,7 +1124,14 @@ ICACHE_FLASH_ATTR void loop() {
           (now - taskTable[t].lastRun >= taskTable[t].interval)) {
         taskTable[t].lastRun = now;
         taskTable[t].executionCount++;
-        taskTable[t].func();
+        if (taskTable[t].func) {
+          taskTable[t].func();
+        } else if (strlen(taskTable[t].cmd) > 0) {
+          char buf[MAX_INPUT_LEN];
+          strncpy(buf, taskTable[t].cmd, MAX_INPUT_LEN - 1);
+          buf[MAX_INPUT_LEN - 1] = '\0';
+          executeCommand(buf, true);
+        }
       }
     }
   }
@@ -1166,8 +1145,7 @@ ICACHE_FLASH_ATTR void loop() {
     for (int i = 0; i <= 2; i++) {
       char bootFile[16];
       snprintf(bootFile, sizeof(bootFile), "%drc.sh", i);
-      int idx = findFile(bootFile, "/");
-      if (idx != -1) {
+      if (LittleFS.exists(String("/") + bootFile)) {
         kprint(F("[System] Executing Standard: "));
         kprintln(bootFile);
         char bootAction[24];
@@ -1180,8 +1158,7 @@ ICACHE_FLASH_ATTR void loop() {
     customBoot[NAME_LEN - 1] = '\0';
     if (customBoot[0] != 0xFF && customBoot[0] != '\0') {
       if (!isSystemProtected(customBoot)) {
-        int idx = findFile(customBoot, "/");
-        if (idx != -1) {
+        if (LittleFS.exists(String("/") + customBoot)) {
           kprint(F("[System] Executing Custom: "));
           kprintln(customBoot);
           char bootAction[NAME_LEN + 8];
@@ -1352,8 +1329,8 @@ ICACHE_FLASH_ATTR bool checkPermission(int fileIdx, uint8_t action,
   uint8_t currentUser = currentAuth ? 0 : 1;
   if (currentUser == 0)
     return true;
-  uint16_t m = vfs[fileIdx].mode;
-  if (vfs[fileIdx].ownerId == currentUser)
+  uint16_t m = 0777;
+  if (true)
     return (m >> 6) & action;
   return m & action;
 }
@@ -1371,83 +1348,7 @@ ICACHE_FLASH_ATTR void printPermissions(uint16_t m, bool isDir) {
     }
   }
 }
-ICACHE_FLASH_ATTR bool isTelnetSafeCommand(const char *cmd) {
-  if (strcmp_P(cmd, PSTR("ls")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("cd")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("pwd")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("cat")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("info")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("dmesg")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("uptime")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("df")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("free")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("whoami")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("uname")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("ps")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("top")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("date")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("help")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("neofetch")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("clear")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("read")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("ping")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("ifconfig")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("wifi")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("hwinfo")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("sys")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("color")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("env")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("alias")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("login")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("logout")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("exit")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("telnet")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("ssh")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("web")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("ota")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("netstat")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("accel")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("hf")) == 0)
-    return true;
-  if (strcmp_P(cmd, PSTR("chat")) == 0)
-    return true;
-  return false;
-}
+
 ICACHE_FLASH_ATTR void expandVars(char *line, size_t maxLen) {
   if (!line || strlen(line) >= maxLen - 1) {
     return;
